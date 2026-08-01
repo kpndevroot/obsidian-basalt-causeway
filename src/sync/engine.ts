@@ -170,6 +170,11 @@ export class SyncEngine {
     this.status('syncing', options.dryRun ? 'Dry run…' : 'Syncing…');
 
     try {
+      if (options.dryRun !== true) await this.resolveClearedConflicts();
+      this.conflicts = Object.keys(this.deps.baseline().conflicts)
+        .map((repoPath) => this.toVaultPath(repoPath) ?? repoPath)
+        .sort();
+
       const report = await this.run(options.dryRun === true);
       this.status(
         this.conflicts.length > 0 ? 'error' : 'idle',
@@ -200,6 +205,105 @@ export class SyncEngine {
     const { plan, commitSha } = await this.push(ctx, head.commitSha, dryRun);
 
     return { dryRun, plan, pulled, conflicts: [...this.conflicts], commitSha };
+  }
+
+  // ---- conflict resolution --------------------------------------------------
+
+  /**
+   * The user's resolution gesture: they deleted the sidecar.
+   *
+   * Its presence is the unresolved marker — so its absence, once we know we put it there,
+   * means "I looked at both versions and dealt with it". Only then does the baseline advance
+   * to the remote sha we conflicted against, which lets the ordinary three-way compare do the
+   * rest: a hand-merged file now reads as `base` and publishes, and a file the user replaced
+   * with the remote copy reads as `mine` and writes nothing.
+   */
+  private async resolveClearedConflicts(): Promise<void> {
+    const baseline = this.deps.baseline();
+    const entries = Object.entries(baseline.conflicts);
+    if (entries.length === 0) return;
+
+    const files = { ...baseline.files };
+    const conflicts = { ...baseline.conflicts };
+    let changed = false;
+
+    for (const [repoPath, record] of entries) {
+      if (record.sidecar === null) continue; // A remote deletion parks no file; see `keepLocalVersion`.
+      if (this.deps.vault.getFileByPath(record.sidecar) !== null) continue;
+
+      if (record.remoteSha === null) delete files[repoPath];
+      else files[repoPath] = record.remoteSha;
+      delete conflicts[repoPath];
+      changed = true;
+    }
+
+    if (changed) await this.deps.saveBaseline({ ...baseline, files, conflicts });
+  }
+
+  /**
+   * The explicit resolution, from the conflict modal: keep what is in the vault and let the
+   * next sync publish it over the remote.
+   *
+   * This is the only route out of a remote-deleted-but-locally-edited conflict, which parks no
+   * sidecar and so has no file for the user to delete.
+   */
+  async keepLocalVersion(vaultPath: string): Promise<void> {
+    const repoPath = this.toRepoPath(vaultPath);
+    const baseline = this.deps.baseline();
+    const record = baseline.conflicts[repoPath];
+    if (!record) return;
+
+    if (record.sidecar !== null) {
+      const sidecar = this.deps.vault.getFileByPath(record.sidecar);
+      if (sidecar) await this.deps.vault.trash(sidecar, true);
+    }
+
+    const files = { ...baseline.files };
+    if (record.remoteSha === null) delete files[repoPath];
+    else files[repoPath] = record.remoteSha;
+
+    const conflicts = { ...baseline.conflicts };
+    delete conflicts[repoPath];
+
+    this.conflicts = this.conflicts.filter((path) => path !== vaultPath);
+    await this.deps.saveBaseline({ ...baseline, files, conflicts });
+  }
+
+  /**
+   * Park the remote version of every newly diverged path beside the local file.
+   *
+   * Done here, off the push plan, rather than during the pull: the plan compares against the
+   * full remote tree, so it sees divergences the `/compare` window misses — a path that
+   * conflicted several syncs ago and has been stale ever since.
+   */
+  private async recordConflicts(ctx: GitHubContext, plan: PushPlan): Promise<void> {
+    if (plan.conflicts.length === 0) return;
+
+    const baseline = this.deps.baseline();
+    const conflicts = { ...baseline.conflicts };
+    let changed = false;
+
+    for (const conflict of plan.conflicts) {
+      const vaultPath = this.toVaultPath(conflict.path);
+      if (vaultPath === null) continue;
+
+      const existing = conflicts[conflict.path];
+      // Already parked against this same remote version — leave the user's copy alone.
+      if (existing && existing.remoteSha === conflict.remoteSha) continue;
+
+      if (conflict.remoteSha === null) {
+        conflicts[conflict.path] = { sidecar: null, remoteSha: null };
+        new Notice(`Basalt Sync: ${vaultPath} was deleted remotely but changed here — kept your copy.`);
+      } else {
+        const sidecar = conflictSidecarPath(vaultPath, conflict.remoteSha);
+        await this.write(sidecar, await readBlob(ctx, conflict.remoteSha));
+        conflicts[conflict.path] = { sidecar, remoteSha: conflict.remoteSha };
+        new Notice(`Basalt Sync: conflict on ${vaultPath} — remote copy saved as ${sidecar}`);
+      }
+      changed = true;
+    }
+
+    if (changed) await this.deps.saveBaseline({ ...this.deps.baseline(), conflicts });
   }
 
   // ---- pull -----------------------------------------------------------------
@@ -242,7 +346,10 @@ export class SyncEngine {
       const localSha = local ? await this.hash(local) : null;
       const baseSha = baseline.files[repoPath] ?? null;
 
-      switch (compare(remoteSha, localSha, baseSha)) {
+      // The vault is what we are about to overwrite, so the vault is the side checked against
+      // the baseline — the mirror of the push call. Passing these the other way round makes
+      // every incoming new file look diverged.
+      switch (compare(localSha, remoteSha, baseSha)) {
         case 'mine':
           // Already applied — typically our own push coming back around.
           if (remoteSha === null) delete nextFiles[repoPath];
@@ -264,27 +371,16 @@ export class SyncEngine {
           }
           break;
 
-        case 'diverged': {
-          // Never overwrite either side. The local file is left exactly as the user has it;
-          // the remote version lands beside it to be diffed by hand.
-          if (remoteSha !== null) {
-            const sidecar = conflictSidecarPath(vaultPath, headSha);
-            await this.write(sidecar, await readBlob(ctx, remoteSha));
-            this.conflicts.push(vaultPath);
-            new Notice(`Basalt Sync: conflict on ${vaultPath} — remote copy saved as ${sidecar}`);
-          } else {
-            this.conflicts.push(vaultPath);
-            new Notice(`Basalt Sync: ${vaultPath} was deleted remotely but changed here — kept your copy.`);
-          }
-          // The baseline entry is deliberately NOT advanced. Leaving it stale keeps the path
-          // reading as diverged on the next push too, so the conflict survives until the user
-          // resolves it rather than being quietly forgotten.
+        case 'diverged':
+          // Write nothing, and deliberately do NOT advance the baseline entry: leaving it
+          // stale is what keeps the path reading as diverged in the push plan, which is where
+          // the sidecar gets parked and the conflict recorded. Doing it here as well would
+          // park it twice, once per direction.
           break;
-        }
       }
     }
 
-    await this.deps.saveBaseline({ commitSha: headSha, files: nextFiles });
+    await this.deps.saveBaseline({ ...this.deps.baseline(), commitSha: headSha, files: nextFiles });
     return { written, deleted };
   }
 
@@ -339,13 +435,29 @@ export class SyncEngine {
         const vaultPath = this.toVaultPath(conflict.path) ?? conflict.path;
         if (!this.conflicts.includes(vaultPath)) this.conflicts.push(vaultPath);
       }
+      if (!dryRun) await this.recordConflicts(ctx, plan);
+
       for (const skipped of plan.skipped) {
         new Notice(
           `Basalt Sync: skipped ${skipped.path} — ${(skipped.size / 1024 / 1024).toFixed(1)} MB exceeds the size limit.`,
         );
       }
 
-      if (dryRun || plan.ops.length === 0) return { plan, commitSha: null };
+      if (dryRun) return { plan, commitSha: null };
+
+      if (plan.ops.length === 0) {
+        // Nothing to write, but the baseline must still be recorded. A sync can legitimately
+        // find the remote already holding our exact bytes — after a crash between the commit
+        // and the baseline save, or after a baseline reset — and returning early without
+        // writing one would leave every file looking permanently unpublished, so deletions
+        // could never be planned again.
+        await this.deps.saveBaseline({
+          ...this.deps.baseline(),
+          commitSha: currentHead,
+          files: nextBaselineFiles(this.deps.baseline().files, local, plan),
+        });
+        return { plan, commitSha: null };
+      }
 
       assertNoSecrets(
         plan.ops.map((op) => op.path),
@@ -369,6 +481,7 @@ export class SyncEngine {
       }
 
       await this.deps.saveBaseline({
+        ...this.deps.baseline(),
         commitSha,
         files: nextBaselineFiles(this.deps.baseline().files, local, plan),
       });

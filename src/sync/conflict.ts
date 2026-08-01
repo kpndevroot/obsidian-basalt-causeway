@@ -8,23 +8,37 @@
  */
 
 export type Freshness =
-  | 'mine' // remote already equals local — nothing to do in either direction
-  | 'base' // remote still equals the baseline both sides agreed on — safe to write over
-  | 'diverged'; // remote is neither — both sides moved
+  | 'mine' // the two sides already agree — nothing to do in either direction
+  | 'base' // the destination still equals the baseline — safe to write over
+  | 'diverged'; // neither — both sides moved
 
 /**
- * `mine` is checked *before* `base`, exactly as `editQueue` does, and the order is
- * load-bearing. After a sync that died between `createCommit` and the local baseline write,
- * a re-run finds a remote that already equals local; answering `mine` makes that re-run a
- * no-op instead of a duplicate commit. Checking `base` first would let an unchanged file
- * (where local === base === remote) read as `base` and re-issue a pointless write.
+ * `destination` is the side about to be **overwritten**, and it is the side checked against
+ * the baseline. That is what makes this one function serve both directions:
  *
- * `remote === mine` also covers `null === null`: a file deleted locally and already gone
- * remotely is `mine`, not a diverged mystery.
+ *   - push — `compare(remoteSha, localSha, baseSha)`: may we overwrite GitHub?
+ *   - pull — `compare(localSha, remoteSha, baseSha)`: may we overwrite the vault?
+ *
+ * Getting that order backwards is not a subtle bug: on the pull side it makes every incoming
+ * new file read as `diverged`, because a remote addition has `destination === null` and
+ * `source !== null`.
+ *
+ * `mine` is checked *before* `base`, exactly as `editQueue` does, and the order is
+ * load-bearing. After a sync that died between `createCommit` and the local baseline write, a
+ * re-run finds a remote that already equals local; answering `mine` makes that re-run a no-op
+ * instead of a duplicate commit. Checking `base` first would let an unchanged file (where
+ * local === base === remote) read as `base` and re-issue a pointless write.
+ *
+ * The first check also covers `null === null`: a file deleted on both sides is `mine`, not a
+ * diverged mystery.
  */
-export function compare(remote: string | null, mine: string | null, base: string | null): Freshness {
-  if (remote === mine) return 'mine';
-  if (remote === base) return 'base';
+export function compare(
+  destination: string | null,
+  source: string | null,
+  base: string | null,
+): Freshness {
+  if (destination === source) return 'mine';
+  if (destination === base) return 'base';
   return 'diverged';
 }
 

@@ -61,7 +61,12 @@ export default class BasaltSyncPlugin extends Plugin {
     });
 
     this.statusBar = new StatusBar(this.addStatusBarItem(), () => {
-      new ConflictModal(this.app, this.status.conflicts, this.status.message).open();
+      new ConflictModal(this.app, this.status.conflicts, this.status.message, async (path) => {
+        await this.engine.keepLocalVersion(path);
+        this.status = { ...this.status, conflicts: this.status.conflicts.filter((p) => p !== path) };
+        this.renderStatus();
+        new Notice(`Basalt Sync: keeping your version of ${path}. Sync to publish it.`);
+      }).open();
     });
     this.renderStatus();
 
@@ -128,7 +133,9 @@ export default class BasaltSyncPlugin extends Plugin {
   }
 
   async resetBaseline(): Promise<void> {
-    this.baseline = { commitSha: null, files: {} };
+    // Fresh objects, not a spread of EMPTY_BASELINE: that constant's `files` and `conflicts`
+    // are shared references, and handing them out would alias the reset state everywhere.
+    this.baseline = { commitSha: null, files: {}, conflicts: {} };
     this.status = { ...this.status, conflicts: [], message: 'Baseline reset.' };
     await this.persist();
     new Notice('Basalt Sync: baseline reset. The next sync republishes everything.');

@@ -100,10 +100,26 @@ that moment, and each path is classified with the same three-way compare Basalt 
 - **`base`** — the remote still holds what both sides agreed on. Safe to write over.
 - **`diverged`** — neither. Both sides moved.
 
+The same function serves both directions — the side being *overwritten* is the side checked
+against the baseline. Pushing asks "may we overwrite GitHub?"; pulling asks "may we overwrite
+the vault?".
+
 On `diverged` the **local file is never touched**. The remote version lands beside it as
 `<name>.conflict-<shortSha>.md`, a notice fires, and the path is listed in the conflict modal.
-Merge by hand, delete the sidecar, sync again. Sidecars are excluded from the push, so they
-never reach the phone as real notes.
+Sidecars are excluded from the push, so they never reach the phone as real notes.
+
+**Resolving.** A conflict is remembered in `data.json` and does not resolve itself — that is
+the whole point. Two things clear one:
+
+- **Delete the sidecar.** Its presence is the unresolved marker, so removing it means "I looked
+  at both versions and dealt with it". Only then does the baseline advance, after which an
+  ordinary sync publishes whatever the note now says.
+- **"Keep my version"** in the conflict modal, which advances the baseline without you having
+  to merge anything. This is the only route out of the one conflict shape that parks no
+  sidecar: a note deleted remotely but edited here.
+
+Resetting the baseline is *not* a third route. It forgets the evidence of who moved, not the
+disagreement itself, so the two versions still differ and it is still a conflict.
 
 Deletions are driven by the baseline, never by "present on GitHub, absent locally" — so a first
 sync against an existing repo can never propose wiping files it did not put there.

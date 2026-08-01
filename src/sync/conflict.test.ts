@@ -38,6 +38,34 @@ describe('compare', () => {
   });
 });
 
+/**
+ * The same function, called with the vault as the destination. Getting this order backwards
+ * silently breaks every incoming file, so it gets its own tests rather than riding on the
+ * push cases above.
+ */
+describe('compare, pulling (destination = the vault)', () => {
+  it('treats a brand-new remote file as safe to write', () => {
+    // local absent, baseline absent: nobody has overwritten anything.
+    expect(compare(null, 'remote', null)).toBe('base');
+  });
+
+  it('treats a remote edit to an untouched local file as safe to write', () => {
+    expect(compare('agreed', 'remote', 'agreed')).toBe('base');
+  });
+
+  it('treats a remote deletion of an untouched local file as safe to apply', () => {
+    expect(compare('agreed', null, 'agreed')).toBe('base');
+  });
+
+  it('reports mine when the incoming file is the one we just pushed', () => {
+    expect(compare('same', 'same', 'older')).toBe('mine');
+  });
+
+  it('reports diverged when the local file moved too', () => {
+    expect(compare('my edit', 'their edit', 'agreed')).toBe('diverged');
+  });
+});
+
 describe('conflictSidecarPath', () => {
   it('keeps the extension so the sidecar still opens as a note', () => {
     expect(conflictSidecarPath('notes/Meeting.md', 'a1b2c3d4e5')).toBe('notes/Meeting.conflict-a1b2c3d.md');

@@ -180,7 +180,8 @@ export class BasaltSyncSettingTab extends PluginSettingTab {
       .setName('Reset sync baseline')
       .setDesc(
         'Forget what the two sides last agreed on. The next sync republishes everything and proposes no deletions. ' +
-          'Use this if conflicts are stuck, never as routine.',
+          'It does not clear conflicts — a file that differs on both sides still differs, and will be reported again. ' +
+          'Use "Keep my version" for that.',
       )
       .addButton((button) =>
         button
