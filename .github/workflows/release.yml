@@ -1,0 +1,45 @@
+name: Release
+
+# Obsidian's community store and BRAT both install from a GitHub release whose assets are
+# the three built files at the top level — not from a tag, and not from a zip. Attaching them
+# by hand is how a release ends up half-published.
+on:
+  push:
+    tags:
+      - '*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+
+      - name: Verify the tag matches manifest.json
+        run: |
+          tag="${GITHUB_REF#refs/tags/}"
+          manifest=$(node -p "require('./manifest.json').version")
+          if [ "$tag" != "$manifest" ]; then
+            echo "Tag $tag does not match manifest version $manifest" >&2
+            exit 1
+          fi
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${GITHUB_REF#refs/tags/}" \
+            --title "${GITHUB_REF#refs/tags/}" \
+            --generate-notes \
+            main.js manifest.json styles.css
