@@ -44,11 +44,16 @@ Not in the community store yet. Either:
 ## Setup
 
 1. Create a **fine-grained** personal access token scoped to the single repo, with
-   **Contents: read and write**, and give it an expiry.
-2. In *Settings → Basalt Sync*, fill in owner, repository, branch and token.
-3. Run **Basalt Sync: dry run** from the command palette. Read the output. Confirm the paths
+   **Contents: read and write**, and give it an expiry. (Already signed in with the GitHub
+   CLI? `gh auth token` prints one you can paste — it carries broader scopes than this plugin
+   needs, so prefer a fine-grained token for anything long-lived.)
+2. Paste it into *Settings → Basalt Sync*. The account name appears once it resolves.
+3. Hit **Choose repository…** and pick from the repositories that token can actually write to.
+   Owner, repository **and branch** are all filled from GitHub — the branch especially, since
+   it is the field whose mistakes are silent.
+4. Run **Basalt Sync: dry run** from the command palette. Read the output. Confirm the paths
    are what you expect and that **nothing under `.obsidian/` appears**.
-4. Run **Basalt Sync: sync now**.
+5. Run **Basalt Sync: sync now**.
 
 > [!WARNING]
 > Your token is stored in plain text in `.obsidian/plugins/basalt-sync/data.json` — which

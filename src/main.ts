@@ -7,34 +7,17 @@
  * makes it unit-testable without a mock of the whole app.
  */
 
-import { Notice, Plugin, requestUrl } from 'obsidian';
+import { Notice, Plugin } from 'obsidian';
 
-import type { HttpRequest, HttpResponse, Transport } from './github/client';
 import { describeError } from './github/errors';
 import { BasaltSyncSettingTab } from './settings';
 import { SyncEngine, type SyncStatus } from './sync/engine';
 import { describePlan } from './sync/plan';
+import { obsidianTransport } from './transport';
 import { DEFAULT_SETTINGS, EMPTY_BASELINE, type Baseline, type BasaltSyncSettings, type PersistedData } from './types';
 import { ConflictModal } from './ui/conflictModal';
 import { DryRunModal } from './ui/dryRunModal';
 import { StatusBar } from './ui/statusBar';
-
-/**
- * `requestUrl` bypasses CORS and touches no Node API, which is the entire reason the manifest
- * can ship `isDesktopOnly: false`. `throw: false` is deliberate: the default rethrows on 4xx
- * and would collapse "rate limited", "no write scope" and "the ref moved" into one opaque
- * failure, when the whole error taxonomy exists to keep them apart.
- */
-const obsidianTransport: Transport = async (req: HttpRequest): Promise<HttpResponse> => {
-  const res = await requestUrl({
-    url: req.url,
-    method: req.method,
-    headers: req.headers,
-    ...(req.body === undefined ? {} : { body: req.body }),
-    throw: false,
-  });
-  return { status: res.status, headers: res.headers, text: res.text };
-};
 
 export default class BasaltSyncPlugin extends Plugin {
   settings: BasaltSyncSettings = { ...DEFAULT_SETTINGS };

@@ -1,9 +1,16 @@
-import { PluginSettingTab, Setting, type App } from 'obsidian';
+import { Notice, PluginSettingTab, Setting, type App } from 'obsidian';
 
+import { describeError } from './github/errors';
+import { fetchViewer, fetchWritableRepos, type Viewer } from './github/identity';
 import type BasaltSyncPlugin from './main';
 import { DEFAULT_EXCLUDE } from './sync/exclude';
+import { obsidianTransport } from './transport';
+import { RepoPicker } from './ui/repoPicker';
 
 export class BasaltSyncSettingTab extends PluginSettingTab {
+  /** Cached for the session so reopening settings does not re-hit the API. */
+  private viewer: Viewer | null = null;
+
   constructor(
     app: App,
     private readonly plugin: BasaltSyncPlugin,
@@ -14,6 +21,8 @@ export class BasaltSyncSettingTab extends PluginSettingTab {
   display(): void {
     const { containerEl } = this;
     containerEl.empty();
+
+    this.renderConnect(containerEl);
 
     new Setting(containerEl).setName('Repository').setHeading();
 
@@ -81,9 +90,18 @@ export class BasaltSyncSettingTab extends PluginSettingTab {
           .setValue(this.plugin.settings.token)
           .onChange(async (value) => {
             this.plugin.settings.token = value.trim();
+            this.viewer = null; // A new token is a different account until proven otherwise.
             await this.plugin.persist();
+            void this.refreshViewer();
           });
       });
+
+    token.descEl.createEl('div', {
+      cls: 'basalt-sync-hint',
+      text:
+        'Already signed in with the GitHub CLI? `gh auth token` prints a token you can paste here. ' +
+        'It carries whatever scopes gh was granted, which is broader than this plugin needs.',
+    });
 
     // Stated plainly and permanently, because the storage location is genuinely hazardous:
     // data.json lives inside the vault this plugin publishes. The exclude filter and the
@@ -176,6 +194,8 @@ export class BasaltSyncSettingTab extends PluginSettingTab {
 
     new Setting(containerEl).setName('Maintenance').setHeading();
 
+    void this.refreshViewer();
+
     new Setting(containerEl)
       .setName('Reset sync baseline')
       .setDesc(
@@ -192,5 +212,76 @@ export class BasaltSyncSettingTab extends PluginSettingTab {
             this.display();
           }),
       );
+  }
+
+  // ---- connect ---------------------------------------------------------------
+
+  /**
+   * The top of the tab: who the token belongs to, and one button that fills in all three
+   * repository fields from GitHub rather than from the user's memory.
+   */
+  private renderConnect(containerEl: HTMLElement): void {
+    const { settings } = this.plugin;
+
+    const status = new Setting(containerEl).setName('GitHub account');
+
+    if (!settings.token) {
+      status.setDesc('Not connected. Add a token below, then pick a repository.');
+      return;
+    }
+
+    status.setDesc(
+      this.viewer ? `Signed in as ${this.viewer.login}` : 'Checking which account this token belongs to…',
+    );
+
+    status.addButton((button) =>
+      button
+        .setButtonText('Choose repository…')
+        .setCta()
+        .onClick(async () => {
+          button.setDisabled(true).setButtonText('Loading…');
+          try {
+            const { repos, truncated } = await fetchWritableRepos({
+              transport: obsidianTransport,
+              token: settings.token,
+            });
+
+            if (repos.length === 0) {
+              new Notice('Basalt Sync: this token cannot write to any repository.');
+              return;
+            }
+
+            new RepoPicker(this.app, repos, truncated, (repo) => {
+              // All three together, from one response — see the comment in `repoPicker.ts`.
+              settings.owner = repo.owner;
+              settings.repo = repo.name;
+              settings.branch = repo.defaultBranch;
+              void this.plugin.persist().then(() => this.display());
+            }).open();
+          } catch (err) {
+            new Notice(`Basalt Sync: ${describeError(err)}`);
+          } finally {
+            button.setDisabled(false).setButtonText('Choose repository…');
+          }
+        }),
+    );
+  }
+
+  /**
+   * Resolve the token to an account name in the background.
+   *
+   * Deliberately silent on failure: a bad token shows up as "not signed in" here and as a real,
+   * actionable error the moment you sync. Opening settings is not the place to raise it.
+   */
+  private async refreshViewer(): Promise<void> {
+    const { token } = this.plugin.settings;
+    if (!token || this.viewer) return;
+
+    try {
+      this.viewer = await fetchViewer({ transport: obsidianTransport, token });
+      this.display();
+    } catch {
+      // Leave `viewer` null; the description stays neutral.
+    }
   }
 }

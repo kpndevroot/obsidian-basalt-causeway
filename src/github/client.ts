@@ -28,11 +28,19 @@ export type HttpResponse = {
  */
 export type Transport = (req: HttpRequest) => Promise<HttpResponse>;
 
-export type GitHubContext = {
+/**
+ * Enough to talk to GitHub as somebody. Split out from `GitHubContext` because account and
+ * repository discovery happen *before* there is a repo to name — that is the whole point of
+ * them.
+ */
+export type Credentials = {
   transport: Transport;
+  token: string;
+};
+
+export type GitHubContext = Credentials & {
   owner: string;
   repo: string;
-  token: string;
 };
 
 export const GITHUB_API = 'https://api.github.com';
@@ -63,14 +71,27 @@ type CallOptions = {
  * callers percent-encode their own segments.
  */
 export async function call<T>(ctx: GitHubContext, path: string, options: CallOptions = {}): Promise<T> {
+  return send(ctx, repoUrl(ctx, path), options);
+}
+
+/** One authenticated call against an API root path — `/user`, `/user/repos`. */
+export async function callRoot<T>(
+  credentials: Credentials,
+  path: string,
+  options: CallOptions = {},
+): Promise<T> {
+  return send(credentials, `${GITHUB_API}${path}`, options);
+}
+
+async function send<T>(credentials: Credentials, url: string, options: CallOptions): Promise<T> {
   const method = options.method ?? 'GET';
   const req: HttpRequest = {
-    url: repoUrl(ctx, path),
+    url,
     method,
     headers: {
       Accept: 'application/vnd.github+json',
       'X-GitHub-Api-Version': '2022-11-28',
-      Authorization: `Bearer ${ctx.token}`,
+      Authorization: `Bearer ${credentials.token}`,
       ...(options.body === undefined ? {} : { 'Content-Type': 'application/json' }),
     },
     ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
@@ -78,7 +99,7 @@ export async function call<T>(ctx: GitHubContext, path: string, options: CallOpt
 
   let res: HttpResponse;
   try {
-    res = await ctx.transport(req);
+    res = await credentials.transport(req);
   } catch (err) {
     // The request never reached GitHub. Distinct from every status code: nothing was
     // written, so the caller may retry the whole sync unchanged once connectivity returns.

@@ -18,6 +18,17 @@
   margin-top: 0.4em;
 }
 
+.basalt-sync-hint {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  margin-top: 0.4em;
+}
+
+.basalt-sync-suggestion-detail {
+  display: block;
+  color: var(--text-muted);
+}
+
 .basalt-sync-dry-run {
   max-height: 50vh;
   overflow: auto;
