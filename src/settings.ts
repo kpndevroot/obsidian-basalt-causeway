@@ -1,15 +1,24 @@
 import { Notice, PluginSettingTab, Setting, type App } from 'obsidian';
 
+import { discoverLocalAccounts, resolveAccountToken, type LocalAccount } from './desktop/ghAccounts';
 import { describeError } from './github/errors';
 import { fetchViewer, fetchWritableRepos, type Viewer } from './github/identity';
 import type BasaltSyncPlugin from './main';
 import { DEFAULT_EXCLUDE } from './sync/exclude';
 import { obsidianTransport } from './transport';
+import { AccountPicker } from './ui/accountPicker';
 import { RepoPicker } from './ui/repoPicker';
 
 export class BasaltSyncSettingTab extends PluginSettingTab {
   /** Cached for the session so reopening settings does not re-hit the API. */
   private viewer: Viewer | null = null;
+
+  /**
+   * Read once per tab open, not per render: `display()` re-runs on every field change, and
+   * touching the filesystem on each keystroke would be wasteful for a list that cannot move
+   * while the tab is open.
+   */
+  private localAccounts: LocalAccount[] | null = null;
 
   constructor(
     app: App,
@@ -226,7 +235,8 @@ export class BasaltSyncSettingTab extends PluginSettingTab {
     const status = new Setting(containerEl).setName('GitHub account');
 
     if (!settings.token) {
-      status.setDesc('Not connected. Add a token below, then pick a repository.');
+      status.setDesc('Not connected. Choose an account below, or paste a token.');
+      this.renderLocalAccounts(containerEl);
       return;
     }
 
@@ -241,29 +251,82 @@ export class BasaltSyncSettingTab extends PluginSettingTab {
         .onClick(async () => {
           button.setDisabled(true).setButtonText('Loading…');
           try {
-            const { repos, truncated } = await fetchWritableRepos({
-              transport: obsidianTransport,
-              token: settings.token,
-            });
-
-            if (repos.length === 0) {
-              new Notice('Basalt Sync: this token cannot write to any repository.');
-              return;
-            }
-
-            new RepoPicker(this.app, repos, truncated, (repo) => {
-              // All three together, from one response — see the comment in `repoPicker.ts`.
-              settings.owner = repo.owner;
-              settings.repo = repo.name;
-              settings.branch = repo.defaultBranch;
-              void this.plugin.persist().then(() => this.display());
-            }).open();
-          } catch (err) {
-            new Notice(`Basalt Sync: ${describeError(err)}`);
+            await this.openRepoPicker();
           } finally {
             button.setDisabled(false).setButtonText('Choose repository…');
           }
         }),
+    );
+  }
+
+  /** Fetch what the current token can write to, and let the user pick one. */
+  private async openRepoPicker(): Promise<void> {
+    const { settings } = this.plugin;
+    try {
+      const { repos, truncated } = await fetchWritableRepos({
+        transport: obsidianTransport,
+        token: settings.token,
+      });
+
+      if (repos.length === 0) {
+        new Notice('Basalt Sync: this token cannot write to any repository.');
+        return;
+      }
+
+      new RepoPicker(this.app, repos, truncated, (repo) => {
+        // All three together, from one response — see the comment in `repoPicker.ts`.
+        settings.owner = repo.owner;
+        settings.repo = repo.name;
+        settings.branch = repo.defaultBranch;
+        void this.plugin.persist().then(() => this.display());
+      }).open();
+    } catch (err) {
+      new Notice(`Basalt Sync: ${describeError(err)}`);
+    }
+  }
+
+  /**
+   * Offer the accounts `gh` has already authenticated here.
+   *
+   * Absent entirely when there are none — on mobile, or on a machine that has never run `gh` —
+   * rather than shown as a disabled control explaining what the user is missing.
+   */
+  private renderLocalAccounts(containerEl: HTMLElement): void {
+    this.localAccounts ??= discoverLocalAccounts();
+    if (this.localAccounts.length === 0) return;
+
+    const setting = new Setting(containerEl)
+      .setName('Use an account from this machine')
+      .setDesc(
+        `${this.localAccounts.length} account(s) signed in with the GitHub CLI. ` +
+          'Convenient, but a CLI token carries broad scopes across every repository you can reach — ' +
+          'prefer a fine-grained token scoped to the vault repo for anything long-lived.',
+      );
+
+    setting.addButton((button) =>
+      button.setButtonText('Choose account…').onClick(() => {
+        new AccountPicker(this.app, this.localAccounts ?? [], (account) => {
+          // The token is fetched from the keychain here, for this one account, only because
+          // the user just chose it. Nothing was read up front.
+          const token = resolveAccountToken(account);
+          if (!token) {
+            new Notice(
+              `Basalt Sync: could not read a token for ${account.login}. ` +
+                'Run `gh auth login`, or paste a token below.',
+            );
+            return;
+          }
+
+          this.plugin.settings.token = token;
+          this.viewer = null;
+          void this.plugin.persist().then(async () => {
+            // Straight on to the repository picker: adopting an account and then hunting for
+            // the next button is the friction this feature exists to remove.
+            this.display();
+            await this.openRepoPicker();
+          });
+        }).open();
+      }),
     );
   }
 
