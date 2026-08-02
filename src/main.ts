@@ -15,6 +15,7 @@ import { SyncEngine, type SyncStatus } from './sync/engine';
 import { describePlan } from './sync/plan';
 import { obsidianTransport } from './transport';
 import { DEFAULT_SETTINGS, EMPTY_BASELINE, type Baseline, type BasaltSyncSettings, type PersistedData } from './types';
+import { BASALT_ICON_ID, registerBasaltIcon } from './ui/basaltIcon';
 import { ConflictModal } from './ui/conflictModal';
 import { DryRunModal } from './ui/dryRunModal';
 import { StatusBar } from './ui/statusBar';
@@ -29,6 +30,10 @@ export default class BasaltSyncPlugin extends Plugin {
   private settleTimer: ReturnType<typeof setTimeout> | null = null;
 
   async onload(): Promise<void> {
+    // Before anything references the id — a ribbon icon pointing at an unregistered id renders
+    // as an empty box.
+    registerBasaltIcon();
+
     await this.loadPersisted();
 
     this.engine = new SyncEngine({
@@ -65,7 +70,7 @@ export default class BasaltSyncPlugin extends Plugin {
       callback: () => void this.runSync(true),
     });
 
-    this.addRibbonIcon('refresh-cw', 'Basalt Sync: sync now', () => void this.runSync(false));
+    this.addRibbonIcon(BASALT_ICON_ID, 'Basalt Sync: sync now', () => void this.runSync(false));
 
     this.addSettingTab(new BasaltSyncSettingTab(this.app, this));
 
