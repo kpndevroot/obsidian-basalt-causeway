@@ -1,4 +1,4 @@
-import { Notice, PluginSettingTab, Setting, type App } from 'obsidian';
+import { Notice, Platform, PluginSettingTab, Setting, type App } from 'obsidian';
 
 import { discoverLocalAccounts, resolveAccountToken, type LocalAccount } from './desktop/ghAccounts';
 import { describeError } from './github/errors';
@@ -306,6 +306,13 @@ export class BasaltCausewaySettingTab extends PluginSettingTab {
    * rather than shown as a disabled control explaining what the user is missing.
    */
   private renderLocalAccounts(containerEl: HTMLElement): void {
+    // `Platform.isDesktopApp` first, even though `discoverLocalAccounts()` already returns [] on
+    // a platform without Node. The redundancy is deliberate: it states the boundary in a form
+    // that is greppable, so a reader — or a plugin reviewer checking that an
+    // `isDesktopOnly: false` plugin never reaches for Node on mobile — sees it here rather than
+    // having to trace a runtime guard three files away.
+    if (!Platform.isDesktopApp) return;
+
     this.localAccounts ??= discoverLocalAccounts();
     if (this.localAccounts.length === 0) return;
 

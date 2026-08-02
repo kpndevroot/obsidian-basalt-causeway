@@ -32,13 +32,31 @@ on Obsidian mobile too (`isDesktopOnly: false`).
 The cost we accept is **no merge machinery**. Divergence is detected and surfaced, never
 guessed at — see [Conflicts](#conflicts).
 
+## What this plugin accesses
+
+Obsidian's developer policies require these to be stated plainly, and they are worth reading
+before installing anything that writes to a repository on your behalf.
+
+- **Network.** Exactly one remote service: **GitHub**, at `api.github.com`, authenticated as you.
+  It reads the branch you configure and writes commits to it. Nothing goes anywhere else — no
+  telemetry, no analytics, no error reporting, no ads.
+- **An account is required.** A GitHub account, and a token with write access to one repository.
+  Without one the plugin does nothing.
+- **Files outside your vault (desktop only).** If you use *Choose account…*, the plugin reads
+  `~/.config/gh/hosts.yml` to list the GitHub logins the `gh` CLI has signed in, and runs
+  `gh auth token` to fetch the token for the **one account you pick**. Nothing is read up front,
+  no other file outside the vault is touched, and on mobile the feature is absent entirely. Paste
+  a token by hand and the plugin never reads outside your vault.
+- **Your token is stored locally**, in plain text, in this plugin's `data.json` — see the warning
+  under [Setup](#setup). It is sent only to GitHub, as an `Authorization` header.
+
 ## Install
 
 Not in the community store yet. Either:
 
-- **BRAT** — add `kpndevroot/obsidian-basalt` as a beta plugin.
+- **BRAT** — add `kpndevroot/obsidian-basalt-causeway` as a beta plugin.
 - **By hand** — download `main.js`, `manifest.json` and `styles.css` from a
-  [release](https://github.com/kpndevroot/obsidian-basalt/releases) into
+  [release](https://github.com/kpndevroot/obsidian-basalt-causeway/releases) into
   `<vault>/.obsidian/plugins/basalt-causeway/`, then enable it in Community plugins.
 
 ## Setup
