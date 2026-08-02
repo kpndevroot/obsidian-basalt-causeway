@@ -5,7 +5,7 @@
  */
 
 import { compare } from './conflict';
-import { FORBIDDEN_PREFIXES } from './exclude';
+import { FORBIDDEN_PREFIXES, isForbiddenPath, normalizeSubfolder } from './exclude';
 
 export type LocalFile = {
   /** Repo-relative — the subfolder prefix is already applied by the caller. */
@@ -13,6 +13,12 @@ export type LocalFile = {
   sha: string;
   size: number;
   binary: boolean;
+  /**
+   * False when the published form of this note cannot currently be computed — a Dataview note
+   * while Dataview is unavailable. Such a file is held, not published: `sha` describes the raw
+   * bytes, which are emphatically *not* what belongs in the repo.
+   */
+  renderable?: boolean;
 };
 
 export type PushOp =
@@ -29,7 +35,7 @@ export type PlanConflict = {
 
 export type SkippedFile = {
   path: string;
-  reason: 'too-large';
+  reason: 'too-large' | 'dataview-unavailable';
   size: number;
 };
 
@@ -60,6 +66,15 @@ export function buildPushPlan(input: PlanInput): PushPlan {
 
   for (const file of local) {
     seen.add(file.path);
+
+    // Held rather than published. Pushing the raw query would overwrite the rendered table the
+    // last successful sync produced — and it would flip straight back the moment Dataview loads,
+    // committing in both directions forever. Skipping also keeps it in `seen`, so the
+    // baseline-driven delete sweep below does not mistake it for a removal.
+    if (file.renderable === false) {
+      skipped.push({ path: file.path, reason: 'dataview-unavailable', size: file.size });
+      continue;
+    }
 
     // GitHub's blob limits would reject this anyway, and a 25 MB inline body is a bad way to
     // find that out. Skipping is not a silent drop — the caller surfaces every entry here.
@@ -131,16 +146,19 @@ export function buildPushPlan(input: PlanInput): PushPlan {
  * unconditional check that does not depend on the user's settings being right.
  */
 export function assertNoSecrets(paths: string[], subfolder: string): void {
-  const prefix = subfolder ? `${subfolder}/` : '';
+  // Normalized through the same helper the engine uses. A hand-edited `data.json` holding
+  // `subfolder: "vault/"` would otherwise build the prefix `vault//`, which matches nothing —
+  // silently turning this last line of defence into a no-op.
+  const normalized = normalizeSubfolder(subfolder);
+  const prefix = normalized ? `${normalized}/` : '';
+
   for (const path of paths) {
     const vaultPath = path.startsWith(prefix) ? path.slice(prefix.length) : path;
-    for (const forbidden of FORBIDDEN_PREFIXES) {
-      if (vaultPath === forbidden.slice(0, -1) || vaultPath.startsWith(forbidden)) {
-        throw new Error(
-          `Refusing to push "${path}": paths under ${forbidden} are never published. ` +
-            'This is a bug in the exclude filter — your token may be in that folder.',
-        );
-      }
+    if (isForbiddenPath(vaultPath)) {
+      throw new Error(
+        `Refusing to push "${path}": paths under ${FORBIDDEN_PREFIXES.join(' or ')} are never ` +
+          'published. This is a bug in the exclude filter — your token may be in that folder.',
+      );
     }
   }
 }
@@ -159,7 +177,8 @@ export function describePlan(plan: PushPlan): string {
   if (plan.skipped.length > 0) {
     lines.push(`${plan.skipped.length} skipped:`);
     for (const s of plan.skipped) {
-      lines.push(`  ${s.reason} ${s.path} (${(s.size / 1024 / 1024).toFixed(1)} MB)`);
+      const detail = s.reason === 'too-large' ? ` (${(s.size / 1024 / 1024).toFixed(1)} MB)` : '';
+      lines.push(`  ${s.reason} ${s.path}${detail}`);
     }
   }
   return lines.join('\n');

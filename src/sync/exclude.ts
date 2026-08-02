@@ -24,8 +24,30 @@
  */
 export const DEFAULT_EXCLUDE = ['.obsidian/**', '.trash/**', '.git/**', '.DS_Store', '*.tmp', '*.conflict-*'];
 
-/** Paths that may never be pushed, whatever the user's exclude list says. See `assertNoSecrets`. */
+/** Paths that may never cross in **either** direction, whatever the user's exclude list says. */
 export const FORBIDDEN_PREFIXES = ['.obsidian/', '.git/'];
+
+/**
+ * The unconditional backstop, applied to pushes *and* pulls.
+ *
+ * Outbound it stops the token leaving. Inbound it is the more serious of the two: without it a
+ * remote commit can write `.obsidian/plugins/<anything>/main.js` into the vault, and Obsidian
+ * executes that file on next load. Anyone who can push to the repo — a collaborator, or whoever
+ * holds a leaked token — would get code execution on the desktop. It can also overwrite this
+ * plugin's own `data.json`.
+ *
+ * Deliberately independent of the user's exclude list, which is a free-text field they can empty.
+ */
+export function isForbiddenPath(vaultPath: string): boolean {
+  return FORBIDDEN_PREFIXES.some(
+    (prefix) => vaultPath === prefix.slice(0, -1) || vaultPath.startsWith(prefix),
+  );
+}
+
+/** Trim stray slashes. Shared so every caller derives the same prefix from the same setting. */
+export function normalizeSubfolder(subfolder: string): string {
+  return subfolder.replace(/^\/+|\/+$/g, '');
+}
 
 function globToRegExp(pattern: string): RegExp {
   let out = '';

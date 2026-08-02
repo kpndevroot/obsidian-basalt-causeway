@@ -19,31 +19,56 @@ export type ChangedFile = {
   previousPath: string | null;
 };
 
+const PER_PAGE = 100;
+
+/** Enough for 3,000 changed files in one range. Past that, refuse rather than guess. */
+const MAX_PAGES = 30;
+
 /**
- * Paths that differ between two commits.
+ * Every path that differs between two commits.
  *
- * GitHub pages this at 300 files and reports the true count in `total_commits`/`files`; a
- * `truncated` view would make us miss changes silently, so callers that get fewer files
- * than `totalFiles` must fall back to a full tree diff rather than trusting the partial list.
+ * **Paginated, and it has to stay that way.** GitHub returns the changed-file list a page at a
+ * time; an unpaginated call silently stops at the first page. A truncated diff is not a degraded
+ * result here, it is a corrupting one: the caller applies what it received and then advances the
+ * baseline commit past the entire range, putting every file it never saw permanently outside
+ * future compare windows. A remote addition among them would never reach the desktop and never
+ * be re-detected either, because the push planner ignores paths that are in neither the baseline
+ * nor the vault.
+ *
+ * So `complete` is reported honestly and the caller refuses to advance on false — replacing a
+ * `totalFiles` that was tautologically equal to the length the caller already had, and so could
+ * never signal anything.
  */
 export async function compareCommits(
   ctx: GitHubContext,
   base: string,
   head: string,
-): Promise<{ files: ChangedFile[]; totalFiles: number }> {
-  const json = await call<{
-    files?: { filename: string; status: string; sha?: string; previous_filename?: string }[];
-  }>(ctx, `/compare/${encodeURIComponent(base)}...${encodeURIComponent(head)}`);
+): Promise<{ files: ChangedFile[]; complete: boolean }> {
+  const files: ChangedFile[] = [];
 
-  const files = (json.files ?? []).map((file) => ({
-    path: file.filename,
-    status: file.status as ChangedFile['status'],
-    // A removed file still carries the sha of the blob it *was*; we want "absent".
-    sha: file.status === 'removed' ? null : (file.sha ?? null),
-    previousPath: file.previous_filename ?? null,
-  }));
+  for (let page = 1; page <= MAX_PAGES; page += 1) {
+    const json = await call<{
+      files?: { filename: string; status: string; sha?: string; previous_filename?: string }[];
+    }>(
+      ctx,
+      `/compare/${encodeURIComponent(base)}...${encodeURIComponent(head)}?per_page=${PER_PAGE}&page=${page}`,
+    );
 
-  return { files, totalFiles: files.length };
+    const batch = json.files ?? [];
+    for (const file of batch) {
+      files.push({
+        path: file.filename,
+        status: file.status as ChangedFile['status'],
+        // A removed file still carries the sha of the blob it *was*; we want "absent".
+        sha: file.status === 'removed' ? null : (file.sha ?? null),
+        previousPath: file.previous_filename ?? null,
+      });
+    }
+
+    if (batch.length < PER_PAGE) return { files, complete: true };
+  }
+
+  return { files, complete: false };
 }
 
 /** A blob's bytes. Returns base64 — the caller decides whether to decode it as text. */

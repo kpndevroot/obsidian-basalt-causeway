@@ -130,6 +130,14 @@ describe('assertNoSecrets', () => {
     expect(() => assertNoSecrets(['vault/.obsidian/app.json'], 'vault')).toThrow(/never published/);
   });
 
+  // The UI normalizes the subfolder, but a hand-edited data.json does not — and an un-normalized
+  // "vault/" built the prefix "vault//", which matches nothing, silently turning the last line
+  // of defence into a no-op.
+  it('normalizes a subfolder with stray slashes before un-mapping', () => {
+    expect(() => assertNoSecrets(['vault/.obsidian/app.json'], 'vault/')).toThrow(/never published/);
+    expect(() => assertNoSecrets(['vault/.obsidian/app.json'], '/vault/')).toThrow(/never published/);
+  });
+
   it('allows a note whose name merely starts with the same letters', () => {
     expect(() => assertNoSecrets(['.obsidian-notes/tips.md', 'notes/a.md'], '')).not.toThrow();
   });

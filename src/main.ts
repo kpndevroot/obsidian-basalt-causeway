@@ -21,6 +21,9 @@ import { ConflictModal } from './ui/conflictModal';
 import { DryRunModal } from './ui/dryRunModal';
 import { StatusBar } from './ui/statusBar';
 
+/** How often the pull poller wakes to *consider* syncing; the setting decides whether it does. */
+const PULL_TICK_MS = 30_000;
+
 export default class BasaltCausewayPlugin extends Plugin {
   settings: BasaltCausewaySettings = { ...DEFAULT_SETTINGS };
   baseline: Baseline = { ...EMPTY_BASELINE };
@@ -29,6 +32,7 @@ export default class BasaltCausewayPlugin extends Plugin {
   private statusBar!: StatusBar;
   private status: SyncStatus = { phase: 'idle', pending: 0, conflicts: [], message: '' };
   private settleTimer: ReturnType<typeof setTimeout> | null = null;
+  private lastPullCheck = 0;
 
   async onload(): Promise<void> {
     // Before anything references the id — a ribbon icon pointing at an unregistered id renders
@@ -94,13 +98,19 @@ export default class BasaltCausewayPlugin extends Plugin {
     // and without it opening a vault would schedule a sync before the plugin knows what is in it.
     this.app.workspace.onLayoutReady(() => {
       void this.refreshPending();
-      if (this.settings.pullIntervalMs > 0) {
-        this.registerInterval(
-          window.setInterval(() => {
-            if (!this.engine.isRunning) void this.runSync(false, { quiet: true });
-          }, this.settings.pullIntervalMs),
-        );
-      }
+      // One fixed tick that *reads* the setting, rather than an interval whose period was
+      // captured at layout-ready. The old form meant changing "check for remote changes" from 0
+      // to 5 never started polling and 5 to 0 never stopped it — until an Obsidian restart, with
+      // nothing in the UI to suggest it.
+      this.registerInterval(
+        window.setInterval(() => {
+          const period = this.settings.pullIntervalMs;
+          if (period <= 0 || this.engine.isRunning) return;
+          if (Date.now() - this.lastPullCheck < period) return;
+          this.lastPullCheck = Date.now();
+          void this.runSync(false, { quiet: true });
+        }, PULL_TICK_MS),
+      );
     });
   }
 
@@ -119,10 +129,14 @@ export default class BasaltCausewayPlugin extends Plugin {
    * Failures are collected and reported once per sync rather than one Notice per query: a
    * vault with a broken query in twenty daily notes would otherwise bury the screen.
    */
-  private async bakeWithDataview(content: string, path: string): Promise<string> {
+  private async bakeWithDataview(content: string, path: string): Promise<string | null> {
     const failures: string[] = [];
     const baker = createBaker(this.app, (file, error) => failures.push(`${file}: ${error}`));
-    if (!baker) return content;
+    // `null`, not `content`. Returning the input would be indistinguishable from a successful
+    // bake that changed nothing — and the engine would then treat the raw query as the published
+    // form and commit it over the rendered table. Vaults where Dataview loads after us would do
+    // that on the first settle-timer sync after startup, then flip back, committing each way.
+    if (!baker) return null;
 
     const baked = await baker(content, path);
     if (failures.length > 0) {
@@ -167,8 +181,15 @@ export default class BasaltCausewayPlugin extends Plugin {
     if (this.settleTimer !== null) clearTimeout(this.settleTimer);
     this.settleTimer = setTimeout(() => {
       this.settleTimer = null;
+      if (this.engine.isRunning) {
+        // Re-arm rather than drop it. The settle timer was already cleared above, so returning
+        // here would strand edits made *during* a sync until some later, unrelated vault event —
+        // and `pull()` writes files itself, so this branch is hit routinely.
+        this.onVaultChanged();
+        return;
+      }
       void this.refreshPending();
-      if (this.settings.autoSync && !this.engine.isRunning) void this.runSync(false, { quiet: true });
+      if (this.settings.autoSync) void this.runSync(false, { quiet: true });
     }, Math.max(1000, this.settings.settleMs));
   }
 

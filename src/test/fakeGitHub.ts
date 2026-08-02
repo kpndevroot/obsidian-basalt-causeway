@@ -206,7 +206,8 @@ export class FakeGitHub {
     }
 
     if (method === 'GET' && path.startsWith('/compare/')) {
-      const [base, head] = decodeURIComponent(path.slice('/compare/'.length)).split('...');
+      const [range, query = ''] = path.slice('/compare/'.length).split('?');
+      const [base, head] = decodeURIComponent(range!).split('...');
       const from = this.trees.get(this.commits.get(base!)!.tree)!;
       const to = this.trees.get(this.commits.get(head!)!.tree)!;
 
@@ -221,7 +222,13 @@ export class FakeGitHub {
       for (const [p, sha] of from) {
         if (!to.has(p)) files.push({ filename: p, status: 'removed', sha });
       }
-      return json({ files });
+
+      // Paged, like the real endpoint. Serving everything in one response would let an
+      // unpaginated client look correct here and silently truncate against GitHub.
+      const params = new URLSearchParams(query);
+      const perPage = Number(params.get('per_page') ?? '100');
+      const page = Number(params.get('page') ?? '1');
+      return json({ files: files.slice((page - 1) * perPage, page * perPage) });
     }
 
     return fail(404, `unrouted ${method} ${path}`);

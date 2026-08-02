@@ -18,7 +18,7 @@ import type { Baseline, BasaltCausewaySettings } from '../types';
 import { pushMessage } from './commitMessages';
 import { compare, conflictSidecarPath } from './conflict';
 import { containsDataview } from './dataview';
-import { compileExclude } from './exclude';
+import { compileExclude, isForbiddenPath, normalizeSubfolder } from './exclude';
 import { assertNoSecrets, buildPushPlan, type LocalFile, type PushPlan } from './plan';
 
 /**
@@ -69,10 +69,14 @@ export type EngineDeps = {
   onStatus: (status: SyncStatus) => void;
   /**
    * Transforms a note's text into the text that gets published — today, replacing Dataview
-   * queries with their results. Absent when Dataview is not installed, in which case published
-   * bytes are simply the file's bytes.
+   * queries with their results.
+   *
+   * Returns **null** when the transformation is unavailable (Dataview not installed, or not yet
+   * loaded). That is distinct from "returned the input unchanged", and the distinction is
+   * load-bearing: treating unavailable as a successful no-op would republish the raw query over
+   * the rendered table every time Dataview happened to be absent.
    */
-  bake?: (content: string, path: string) => Promise<string>;
+  bake?: (content: string, path: string) => Promise<string | null>;
 };
 
 /** A file's identity as of the last time we hashed it, keyed by vault path. */
@@ -89,6 +93,12 @@ export class SyncEngine {
    * a dropped cache costs one full rehash and can never produce a wrong answer.
    */
   private hashCache = new Map<string, HashEntry>();
+
+  /**
+   * Published bytes for baked notes, valid for the duration of one sync and cleared at its start.
+   * Exists so the bytes hashed and the bytes pushed are the same bytes.
+   */
+  private publishedThisSync = new Map<string, string>();
 
   constructor(private readonly deps: EngineDeps) {}
 
@@ -110,33 +120,45 @@ export class SyncEngine {
 
   /** Vault path → repo path. The subfolder lets one repo hold the vault under a prefix. */
   private toRepoPath(vaultPath: string): string {
-    const sub = this.deps.settings().subfolder.replace(/^\/+|\/+$/g, '');
+    const sub = normalizeSubfolder(this.deps.settings().subfolder);
     return sub ? `${sub}/${vaultPath}` : vaultPath;
   }
 
   /** Repo path → vault path, or null when the path lies outside our subfolder entirely. */
   private toVaultPath(repoPath: string): string | null {
-    const sub = this.deps.settings().subfolder.replace(/^\/+|\/+$/g, '');
+    const sub = normalizeSubfolder(this.deps.settings().subfolder);
     if (!sub) return repoPath;
     if (!repoPath.startsWith(`${sub}/`)) return null;
     return repoPath.slice(sub.length + 1);
   }
 
   /**
-   * The text this file publishes as. Identical to its contents unless baking is on and the note
-   * holds a Dataview query.
+   * The text this file publishes as, and whether that actually differs from what is on disk.
+   *
+   * `baked` is derived from the **bytes**, not from "the note contains a fence". A note holding
+   * only a `dataviewjs` block, or a query that failed to render, comes back byte-identical — and
+   * must therefore behave like any ordinary note, including being pullable. Keying the guard on
+   * fence presence made those notes permanently publish-only for no benefit.
    */
-  private async publishedText(file: TFile, raw?: string): Promise<string> {
+  private async publishedFor(
+    file: TFile,
+    raw?: string,
+  ): Promise<{ text: string; baked: boolean; blocked: boolean }> {
     const content = raw ?? (await this.deps.vault.cachedRead(file));
-    const bake = this.deps.bake;
-    if (!bake || !this.deps.settings().bakeDataview) return content;
-    return bake(content, file.path);
-  }
+    const plain = { text: content, baked: false, blocked: false };
+    if (!isTextPath(file.path)) return plain;
 
-  /** True when this note's published bytes differ from its bytes on disk. */
-  private async isBaked(file: TFile, raw?: string): Promise<boolean> {
-    if (!this.deps.bake || !this.deps.settings().bakeDataview || !isTextPath(file.path)) return false;
-    return containsDataview(raw ?? (await this.deps.vault.cachedRead(file)));
+    const bake = this.deps.bake;
+    if (!bake || !this.deps.settings().bakeDataview) return plain;
+
+    const out = await bake(content, file.path);
+    if (out === null) {
+      // The transformer is unavailable. If this note has no queries that changes nothing; if it
+      // does, we cannot compute what belongs in the repo, and the raw query is the one answer
+      // that is definitely wrong. `blocked` holds the note back in both directions.
+      return { ...plain, blocked: containsDataview(content) };
+    }
+    return { text: out, baked: out !== content, blocked: false };
   }
 
   /**
@@ -154,13 +176,20 @@ export class SyncEngine {
     }
 
     const raw = await this.deps.vault.cachedRead(file);
+    const published = await this.publishedFor(file, raw);
 
-    if (await this.isBaked(file, raw)) {
-      // Never cached, and this is the subtle one: a baked note's published bytes depend on the
-      // *whole vault*, not on this file. Adding a note elsewhere changes what `TABLE ... FROM
-      // #tag` returns while this file's mtime and size never move — so an mtime-keyed cache
-      // would pin the query result at whatever it was the first time and never publish again.
-      return gitBlobSha(await this.publishedText(file, raw));
+    if (published.baked) {
+      // Memoised for *this sync only*, so `treeEntries` pushes the exact bytes this sha was
+      // taken over. Rendering twice let the baseline record one result while the commit carried
+      // another — for any query involving a date or an mtime, that is a conflict sidecar
+      // appearing on a file nobody touched.
+      this.publishedThisSync.set(file.path, published.text);
+
+      // Never mtime-cached, and this is the subtle one: a baked note's published bytes depend on
+      // the *whole vault*, not on this file. Adding a note elsewhere changes what `TABLE ... FROM
+      // #tag` returns while this file's mtime and size never move — so an mtime-keyed cache would
+      // pin the query result at whatever it was the first time and never publish again.
+      return gitBlobSha(published.text);
     }
 
     const cached = this.hashCache.get(file.path);
@@ -180,11 +209,13 @@ export class SyncEngine {
 
     const out: LocalFile[] = [];
     for (const file of files) {
+      const published = isTextPath(file.path) ? await this.publishedFor(file) : null;
       out.push({
         path: this.toRepoPath(file.path),
         sha: await this.hash(file),
         size: file.stat.size,
         binary: !isTextPath(file.path),
+        renderable: !published?.blocked,
       });
     }
     return out;
@@ -210,6 +241,7 @@ export class SyncEngine {
     if (this.running) throw new Error('A sync is already running.');
     this.running = true;
     this.conflicts = [];
+    this.publishedThisSync.clear();
     this.status('syncing', options.dryRun ? 'Dry run…' : 'Syncing…');
 
     try {
@@ -364,7 +396,17 @@ export class SyncEngine {
     if (!baseline.commitSha || baseline.commitSha === headSha) return { written: 0, deleted: 0 };
 
     const excluded = compileExclude(this.deps.settings().exclude);
-    const { files } = await compareCommits(ctx, baseline.commitSha, headSha);
+    const { files, complete } = await compareCommits(ctx, baseline.commitSha, headSha);
+
+    // Refuse rather than apply half a range. Advancing `commitSha` past changes we never saw
+    // would put them permanently outside every future compare window — they would never arrive
+    // and never be re-detected. Better a loud stop the user can act on.
+    if (!complete) {
+      throw new Error(
+        'Too many files changed on GitHub since the last sync to compare safely. ' +
+          'Reset the sync baseline in settings to republish from the current state.',
+      );
+    }
 
     const nextFiles = { ...baseline.files };
     let written = 0;
@@ -384,7 +426,17 @@ export class SyncEngine {
 
     for (const { repoPath, sha: remoteSha } of incoming) {
       const vaultPath = this.toVaultPath(repoPath);
-      if (vaultPath === null || excluded(vaultPath)) continue;
+      if (vaultPath === null) continue;
+
+      // Unconditional, and checked *before* the user's exclude list — which is a free-text field
+      // they can empty. Without this a remote commit can drop `.obsidian/plugins/x/main.js` into
+      // the vault, and Obsidian executes it on next load: anyone who can push to the repo gets
+      // code execution on this machine. It could also overwrite this plugin's own `data.json`.
+      // The push path has had this backstop since day one; the pull path is the more dangerous
+      // direction and had only the settings-dependent filter.
+      if (isForbiddenPath(vaultPath)) continue;
+
+      if (excluded(vaultPath)) continue;
 
       const local = this.deps.vault.getFileByPath(vaultPath);
 
@@ -393,7 +445,8 @@ export class SyncEngine {
       // own output — destroying the note to apply a change derived from it. The desktop stays
       // the source of truth; if the remote really did move, the push planner sees it as
       // diverged and parks a sidecar, so nothing is lost silently.
-      if (local && (await this.isBaked(local))) {
+      const localPublished = local ? await this.publishedFor(local) : null;
+      if (localPublished && (localPublished.baked || localPublished.blocked)) {
         skippedBaked += 1;
         continue;
       }
@@ -501,7 +554,9 @@ export class SyncEngine {
 
       for (const skipped of plan.skipped) {
         new Notice(
-          `Basalt Causeway: skipped ${skipped.path} — ${(skipped.size / 1024 / 1024).toFixed(1)} MB exceeds the size limit.`,
+          skipped.reason === 'too-large'
+            ? `Basalt Causeway: skipped ${skipped.path} — ${(skipped.size / 1024 / 1024).toFixed(1)} MB exceeds the size limit.`
+            : `Basalt Causeway: held back ${skipped.path} — Dataview is not available, so its published form cannot be built.`,
         );
       }
 
@@ -571,7 +626,8 @@ export class SyncEngine {
       }
 
       const vaultPath = this.toVaultPath(op.path);
-      const file = vaultPath === null ? null : this.deps.vault.getFileByPath(vaultPath);
+      if (vaultPath === null) continue;
+      const file = this.deps.vault.getFileByPath(vaultPath);
       if (!file) continue; // Deleted between the plan and now; the next sync will catch it.
 
       if (op.binary) {
@@ -582,7 +638,7 @@ export class SyncEngine {
           path: op.path,
           mode: '100644',
           type: 'blob',
-          content: await this.publishedText(file),
+          content: this.publishedThisSync.get(vaultPath) ?? (await this.publishedFor(file)).text,
         });
       }
     }

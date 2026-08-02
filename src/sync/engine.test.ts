@@ -5,6 +5,7 @@ import { FakeGitHub } from '../test/fakeGitHub';
 import { FakeVault } from '../test/fakeVault';
 import { clearNotices, notices } from '../test/obsidian';
 import { DEFAULT_SETTINGS, EMPTY_BASELINE, type Baseline, type BasaltCausewaySettings } from '../types';
+import { bakeDataview } from './dataview';
 import { SyncEngine } from './engine';
 
 function harness(
@@ -24,15 +25,21 @@ function harness(
   };
   let baseline: Baseline = { commitSha: null, files: {}, conflicts: {} };
 
-  // A stand-in for Dataview: replaces any query with a rendered table, so the published bytes
-  // genuinely differ from the file on disk — which is the whole point of the invariant.
+  // Drives the REAL `bakeDataview` — only the query execution is faked. An earlier harness
+  // substituted its own regex for the fence scanner, so the entire Dataview section of these
+  // tests exercised a stub, and four scanner bugs sailed through a green suite.
   let bakeCount = 0;
-  const bake = async (content: string) =>
-    content.replace(/```dataview\n([\s\S]*?)```\n?/g, (_match, query: string) => {
-      bakeCount += 1;
-      return `<!-- basalt-causeway: generated -->\n| ${query.trim()} → row ${rows} |\n<!-- /basalt-causeway -->\n`;
-    });
   let rows = 1;
+  let dataviewAvailable = true;
+
+  const bake = async (content: string, path: string): Promise<string | null> => {
+    if (!dataviewAvailable) return null;
+    return bakeDataview(content, path, async (query, kind) => {
+      if (kind !== 'dataview') return null;
+      bakeCount += 1;
+      return `| ${query.trim()} → row ${rows} |`;
+    });
+  };
 
   const engine = new SyncEngine({
     vault: vault.asVault(),
@@ -61,6 +68,10 @@ function harness(
     /** Simulate the rest of the vault changing, so the same query renders differently. */
     changeQueryResults() {
       rows += 1;
+    },
+    /** Simulate Dataview being disabled, or not yet loaded when a sync fires. */
+    setDataviewAvailable(available: boolean) {
+      dataviewAvailable = available;
     },
     get bakeCount() {
       return bakeCount;
@@ -511,6 +522,10 @@ describe('conflicts', () => {
     h.github.commit({ 'a.md': 'their phone edit' });
 
     await h.engine.sync();
+    // Twice, deliberately. The sidecar is written *after* `enumerate()` in the sync that creates
+    // it, so a single sync proves nothing — this passed even with `*.conflict-*` removed from
+    // the exclude list, while the next sync happily published the sidecar.
+    await h.engine.sync();
 
     expect(Object.keys(h.github.files()).some((p) => p.includes('.conflict-'))).toBe(false);
   });
@@ -626,7 +641,7 @@ describe('dataview', () => {
     const published = h.github.files()['Index.md']!;
     expect(published).not.toContain('```dataview');
     expect(published).toContain('TABLE file.name FROM #note → row 1');
-    expect(published).toContain('<!-- basalt-causeway:');
+    expect(published).toContain('<!-- basalt:');
   });
 
   it('leaves the note in the vault holding the live query', async () => {
@@ -705,6 +720,35 @@ describe('dataview', () => {
     expect(h.vault.paths().filter((p) => p.includes('.conflict-'))).toHaveLength(1);
   });
 
+  // "Dataview is unavailable" must not read as "baking produced the raw query", or every baked
+  // note reverts to a blank query block the moment Dataview is disabled — or simply loads after
+  // us, which a settle-timer sync in the first seconds after startup hits routinely.
+  it('leaves the published table alone when Dataview is unavailable', async () => {
+    const h = harness({ 'Index.md': QUERY });
+    await h.engine.sync();
+    const after = h.github.history().length;
+
+    h.setDataviewAvailable(false);
+    const report = await h.engine.sync();
+
+    expect(report.plan.ops).toEqual([]);
+    expect(h.github.history()).toHaveLength(after);
+    expect(h.github.files()['Index.md']).toContain('→ row 1');
+  });
+
+  // Nothing is baked for these — the published bytes equal the file's — so treating them as
+  // publish-only stranded remote edits forever for no benefit.
+  it('pulls a note that holds only a dataviewjs block', async () => {
+    const h = harness({ 'JS.md': '```dataviewjs\ndv.list([1])\n```\n' });
+    await h.engine.sync();
+
+    h.github.commit({ 'JS.md': 'edited on the phone' });
+    const report = await h.engine.sync();
+
+    expect(h.vault.contentOf('JS.md')).toBe('edited on the phone');
+    expect(report.conflicts).toEqual([]);
+  });
+
   it('publishes the query verbatim when baking is turned off', async () => {
     const h = harness({ 'Index.md': QUERY }, {}, { bakeDataview: false });
 
@@ -721,6 +765,53 @@ describe('dataview', () => {
     await h.engine.sync();
 
     expect(h.vault.contentOf('Index.md')).toBe('rewritten remotely');
+  });
+});
+
+describe('the forbidden-path backstop', () => {
+  // The exclude list is a free-text field the user can empty. Outbound that leaks the token;
+  // inbound it is worse — Obsidian executes `.obsidian/plugins/*/main.js` on next load, so a
+  // remote write there is code execution on this machine.
+  it('never writes an incoming .obsidian path into the vault, even with the exclude list emptied', async () => {
+    const h = harness({ 'a.md': 'alpha' }, {}, { exclude: ['.trash/**'] });
+    await h.engine.sync();
+
+    h.github.commit({ '.obsidian/plugins/evil/main.js': 'require("child_process").exec("bad")' });
+    const report = await h.engine.sync();
+
+    expect(h.vault.has('.obsidian/plugins/evil/main.js')).toBe(false);
+    expect(report.pulled.written).toBe(0);
+  });
+
+  it('never lets an incoming write replace this plugin\'s own data.json', async () => {
+    const h = harness({ 'a.md': 'alpha' }, {}, { exclude: [] });
+    await h.engine.sync();
+
+    h.github.commit({ '.obsidian/plugins/basalt-causeway/data.json': '{"settings":{"token":"stolen"}}' });
+    await h.engine.sync();
+
+    expect(h.vault.has('.obsidian/plugins/basalt-causeway/data.json')).toBe(false);
+  });
+
+  it('never writes an incoming .git path', async () => {
+    const h = harness({ 'a.md': 'alpha' }, {}, { exclude: [] });
+    await h.engine.sync();
+
+    h.github.commit({ '.git/config': '[core]' });
+    await h.engine.sync();
+
+    expect(h.vault.has('.git/config')).toBe(false);
+  });
+
+  it('refuses to push a forbidden path even with the exclude list emptied', async () => {
+    const h = harness(
+      { 'a.md': 'alpha', '.obsidian/plugins/basalt-causeway/data.json': '{"token":"secret"}' },
+      {},
+      { exclude: [] },
+    );
+
+    await expect(h.engine.sync()).rejects.toThrow(/never published/);
+    expect(Object.keys(h.github.files())).not.toContain('.obsidian/plugins/basalt-causeway/data.json');
   });
 });
 

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { bakeDataview, containsDataview, findDataviewBlocks, isBaked, type RenderQuery } from './dataview';
+import { bakeDataview, containsDataview, findDataviewBlocks, type RenderQuery } from './dataview';
 
 const render: RenderQuery = async (query) => `| result |\n| --- |\n| ${query.trim()} |`;
 
@@ -52,6 +52,40 @@ describe('findDataviewBlocks', () => {
     expect(findDataviewBlocks('```dataview\nTABLE file.name\n')).toEqual([]);
   });
 
+  // An info string with a space used to match nothing, so the fence never opened and its
+  // *closing* ``` was read as an opening one — inverting in/out state for the rest of the note.
+  it('handles an info string carrying attributes', () => {
+    const content = '```js {1,3}\nconst x = 1;\n```\n\n```dataview\nTABLE file.name\n```\n';
+    const blocks = findDataviewBlocks(content);
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0]!.query).toBe('TABLE file.name');
+  });
+
+  it('handles the other common attribute spellings', () => {
+    for (const info of ['python title="x"', 'mermaid graph LR', 'ts twoslash']) {
+      const content = `\`\`\`${info}\nbody\n\`\`\`\n\n\`\`\`dataview\nTABLE x\n\`\`\`\n`;
+      expect(findDataviewBlocks(content)).toHaveLength(1);
+    }
+  });
+
+  // Four spaces makes it an indented code block in CommonMark — someone documenting the syntax,
+  // not writing a query.
+  it('ignores a fence indented past the code-block threshold', () => {
+    expect(findDataviewBlocks('    ```dataview\n    TABLE x\n    ```\n')).toEqual([]);
+  });
+
+  it('captures the indentation of a fence inside a list item', () => {
+    const blocks = findDataviewBlocks('- item\n  ```dataview\n  TABLE x\n  ```\n');
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0]!.indent).toBe('  ');
+  });
+
+  it('strips carriage returns from the query of a CRLF note', () => {
+    const blocks = findDataviewBlocks('```dataview\r\nTABLE x\r\nFROM #n\r\n```\r\n');
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0]!.query).toBe('TABLE x\nFROM #n');
+  });
+
   it('is case-insensitive on the info string', () => {
     expect(findDataviewBlocks('```DataView\nTABLE x\n```\n')[0]!.kind).toBe('dataview');
   });
@@ -68,8 +102,8 @@ describe('bakeDataview', () => {
 
   it('marks generated content so a reader can tell it apart from prose', async () => {
     const out = await bakeDataview('```dataview\nTABLE x\n```\n', 'note.md', render);
-    expect(out).toContain('<!-- basalt:');
-    expect(isBaked(out)).toBe(true);
+    expect(out).toContain('<!-- basalt: generated');
+    expect(out).toContain('<!-- /basalt -->');
   });
 
   it('returns the input untouched when there is nothing to bake', async () => {
@@ -105,6 +139,22 @@ describe('bakeDataview', () => {
     );
     expect(out).toContain('baked A');
     expect(out).toContain('```dataviewjs');
+  });
+});
+
+describe('bakeDataview line handling', () => {
+  it('keeps a list item intact by re-indenting the replacement', async () => {
+    const out = await bakeDataview('- item\n  ```dataview\n  TABLE x\n  ```\n', 'n.md', render);
+    for (const line of out.split('\n').slice(1)) {
+      if (line !== '') expect(line.startsWith('  ')).toBe(true);
+    }
+  });
+
+  it('does not mix line endings in a CRLF note', async () => {
+    const out = await bakeDataview('Intro\r\n\r\n```dataview\r\nTABLE x\r\n```\r\n', 'n.md', render);
+    // Every LF must be part of a CRLF pair, or git reports the whole file as changed next time
+    // anything rewrites it.
+    expect(out.replace(/\r\n/g, '')).not.toContain('\n');
   });
 });
 

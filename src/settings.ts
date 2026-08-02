@@ -168,7 +168,11 @@ export class BasaltCausewaySettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('Exclude')
-      .setDesc('One glob per line. Removing .obsidian/** is not supported — the push path rejects it regardless.')
+      .setDesc(
+        'One glob per line. Adding a pattern also *unpublishes* files it now matches — they are ' +
+          'deleted from the repo on the next sync (not from its history). Removing .obsidian/** ' +
+          'has no effect: both directions reject those paths regardless of this list.',
+      )
       .addTextArea((area) => {
         area.inputEl.rows = 7;
         area.setValue(this.plugin.settings.exclude.join('\n')).onChange(async (value) => {
