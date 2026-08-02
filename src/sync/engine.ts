@@ -17,6 +17,7 @@ import { createBlob, createCommit, createTree, readHead, readTree, updateRef, ty
 import type { Baseline, BasaltSyncSettings } from '../types';
 import { pushMessage } from './commitMessages';
 import { compare, conflictSidecarPath } from './conflict';
+import { containsDataview } from './dataview';
 import { compileExclude } from './exclude';
 import { assertNoSecrets, buildPushPlan, type LocalFile, type PushPlan } from './plan';
 
@@ -66,6 +67,12 @@ export type EngineDeps = {
   baseline: () => Baseline;
   saveBaseline: (baseline: Baseline) => Promise<void>;
   onStatus: (status: SyncStatus) => void;
+  /**
+   * Transforms a note's text into the text that gets published — today, replacing Dataview
+   * queries with their results. Absent when Dataview is not installed, in which case published
+   * bytes are simply the file's bytes.
+   */
+  bake?: (content: string, path: string) => Promise<string>;
 };
 
 /** A file's identity as of the last time we hashed it, keyed by vault path. */
@@ -115,14 +122,50 @@ export class SyncEngine {
     return repoPath.slice(sub.length + 1);
   }
 
+  /**
+   * The text this file publishes as. Identical to its contents unless baking is on and the note
+   * holds a Dataview query.
+   */
+  private async publishedText(file: TFile, raw?: string): Promise<string> {
+    const content = raw ?? (await this.deps.vault.cachedRead(file));
+    const bake = this.deps.bake;
+    if (!bake || !this.deps.settings().bakeDataview) return content;
+    return bake(content, file.path);
+  }
+
+  /** True when this note's published bytes differ from its bytes on disk. */
+  private async isBaked(file: TFile, raw?: string): Promise<boolean> {
+    if (!this.deps.bake || !this.deps.settings().bakeDataview || !isTextPath(file.path)) return false;
+    return containsDataview(raw ?? (await this.deps.vault.cachedRead(file)));
+  }
+
+  /**
+   * The sha of what this file *publishes as* — not of what is on disk. Every comparison in the
+   * engine is against a remote blob, so the published bytes are the only ones that can be
+   * compared to one.
+   */
   private async hash(file: TFile): Promise<string> {
+    if (!isTextPath(file.path)) {
+      const cached = this.hashCache.get(file.path);
+      if (cached && cached.mtime === file.stat.mtime && cached.size === file.stat.size) return cached.sha;
+      const sha = gitBlobSha(new Uint8Array(await this.deps.vault.readBinary(file)));
+      this.hashCache.set(file.path, { mtime: file.stat.mtime, size: file.stat.size, sha });
+      return sha;
+    }
+
+    const raw = await this.deps.vault.cachedRead(file);
+
+    if (await this.isBaked(file, raw)) {
+      // Never cached, and this is the subtle one: a baked note's published bytes depend on the
+      // *whole vault*, not on this file. Adding a note elsewhere changes what `TABLE ... FROM
+      // #tag` returns while this file's mtime and size never move — so an mtime-keyed cache
+      // would pin the query result at whatever it was the first time and never publish again.
+      return gitBlobSha(await this.publishedText(file, raw));
+    }
+
     const cached = this.hashCache.get(file.path);
     if (cached && cached.mtime === file.stat.mtime && cached.size === file.stat.size) return cached.sha;
-
-    const sha = isTextPath(file.path)
-      ? gitBlobSha(await this.deps.vault.cachedRead(file))
-      : gitBlobSha(new Uint8Array(await this.deps.vault.readBinary(file)));
-
+    const sha = gitBlobSha(raw);
     this.hashCache.set(file.path, { mtime: file.stat.mtime, size: file.stat.size, sha });
     return sha;
   }
@@ -326,6 +369,7 @@ export class SyncEngine {
     const nextFiles = { ...baseline.files };
     let written = 0;
     let deleted = 0;
+    let skippedBaked = 0;
 
     // A rename arrives as one entry naming both paths. Expanding it into a removal plus an
     // addition lets the same two code paths handle it, with no rename-specific branch.
@@ -343,6 +387,17 @@ export class SyncEngine {
       if (vaultPath === null || excluded(vaultPath)) continue;
 
       const local = this.deps.vault.getFileByPath(vaultPath);
+
+      // Baked notes are publish-only. What the remote holds for them is a rendered table, and
+      // writing that back would replace the user's live query with a frozen snapshot of its
+      // own output — destroying the note to apply a change derived from it. The desktop stays
+      // the source of truth; if the remote really did move, the push planner sees it as
+      // diverged and parks a sidecar, so nothing is lost silently.
+      if (local && (await this.isBaked(local))) {
+        skippedBaked += 1;
+        continue;
+      }
+
       const localSha = local ? await this.hash(local) : null;
       const baseSha = baseline.files[repoPath] ?? null;
 
@@ -378,6 +433,13 @@ export class SyncEngine {
           // park it twice, once per direction.
           break;
       }
+    }
+
+    if (skippedBaked > 0) {
+      new Notice(
+        `Basalt Sync: ${skippedBaked} incoming change(s) skipped — those notes publish Dataview results, ` +
+          'so the desktop copy wins.',
+      );
     }
 
     await this.deps.saveBaseline({ ...this.deps.baseline(), commitSha: headSha, files: nextFiles });
@@ -520,7 +582,7 @@ export class SyncEngine {
           path: op.path,
           mode: '100644',
           type: 'blob',
-          content: await this.deps.vault.cachedRead(file),
+          content: await this.publishedText(file),
         });
       }
     }

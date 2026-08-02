@@ -24,6 +24,16 @@ function harness(
   };
   let baseline: Baseline = { commitSha: null, files: {}, conflicts: {} };
 
+  // A stand-in for Dataview: replaces any query with a rendered table, so the published bytes
+  // genuinely differ from the file on disk — which is the whole point of the invariant.
+  let bakeCount = 0;
+  const bake = async (content: string) =>
+    content.replace(/```dataview\n([\s\S]*?)```\n?/g, (_match, query: string) => {
+      bakeCount += 1;
+      return `<!-- basalt-sync: generated -->\n| ${query.trim()} → row ${rows} |\n<!-- /basalt-sync -->\n`;
+    });
+  let rows = 1;
+
   const engine = new SyncEngine({
     vault: vault.asVault(),
     transport: github.transport(),
@@ -33,6 +43,7 @@ function harness(
       baseline = next;
     },
     onStatus: () => {},
+    bake,
   });
 
   return {
@@ -46,6 +57,13 @@ function harness(
     /** Wipe the baseline the way a lost data.json or a user-triggered reset does. */
     resetBaseline() {
       baseline = { commitSha: null, files: {}, conflicts: {} };
+    },
+    /** Simulate the rest of the vault changing, so the same query renders differently. */
+    changeQueryResults() {
+      rows += 1;
+    },
+    get bakeCount() {
+      return bakeCount;
     },
   };
 }
@@ -594,6 +612,115 @@ describe('dry run', () => {
     await h.engine.sync({ dryRun: true });
 
     expect(h.vault.has('from-phone.md')).toBe(false);
+  });
+});
+
+describe('dataview', () => {
+  const QUERY = '# Index\n\n```dataview\nTABLE file.name FROM #note\n```\n';
+
+  it('publishes the rendered result, not the query', async () => {
+    const h = harness({ 'Index.md': QUERY });
+
+    await h.engine.sync();
+
+    const published = h.github.files()['Index.md']!;
+    expect(published).not.toContain('```dataview');
+    expect(published).toContain('TABLE file.name FROM #note → row 1');
+    expect(published).toContain('<!-- basalt-sync:');
+  });
+
+  it('leaves the note in the vault holding the live query', async () => {
+    const h = harness({ 'Index.md': QUERY });
+
+    await h.engine.sync();
+
+    // The transformation is publish-time only. Rewriting the user's note would be the actual
+    // destructive version of this feature.
+    expect(h.vault.contentOf('Index.md')).toBe(QUERY);
+  });
+
+  it('publishes ordinary notes untouched', async () => {
+    const h = harness({ 'plain.md': '# Plain\n\nNo queries.\n' });
+    await h.engine.sync();
+    expect(h.github.files()['plain.md']).toBe('# Plain\n\nNo queries.\n');
+  });
+
+  it('does not re-push a baked note whose result has not moved', async () => {
+    const h = harness({ 'Index.md': QUERY });
+    await h.engine.sync();
+    const after = h.github.history().length;
+
+    const report = await h.engine.sync();
+
+    // The baseline stores the *published* sha, so an unchanged result is `mine` — not an
+    // endless stream of identical commits, which is what comparing against the raw file
+    // would produce.
+    expect(report.plan.ops).toEqual([]);
+    expect(h.github.history()).toHaveLength(after);
+  });
+
+  // The subtle one: a query's result depends on the whole vault, so the note's own mtime says
+  // nothing about whether its published bytes changed.
+  it('republishes when the query result changes but the note does not', async () => {
+    const h = harness({ 'Index.md': QUERY });
+    await h.engine.sync();
+
+    h.changeQueryResults();
+    const report = await h.engine.sync();
+
+    expect(report.plan.counts.changed).toBe(1);
+    expect(h.github.files()['Index.md']).toContain('→ row 2');
+  });
+
+  it('re-bakes a query note every sync, and never caches it by mtime', async () => {
+    const h = harness({ 'Index.md': QUERY, 'plain.md': 'nothing here' });
+    await h.engine.sync();
+    const first = h.bakeCount;
+
+    await h.engine.sync();
+
+    expect(h.bakeCount).toBeGreaterThan(first);
+  });
+
+  // Applying a rendered table back over the note would replace the query with a snapshot of
+  // its own output — losing the note to apply a change derived from it.
+  it('never writes a published table back over the live query', async () => {
+    const h = harness({ 'Index.md': QUERY });
+    await h.engine.sync();
+
+    h.github.commit({ 'Index.md': '| someone edited the generated table |' });
+    await h.engine.sync();
+
+    expect(h.vault.contentOf('Index.md')).toBe(QUERY);
+  });
+
+  it('surfaces a remote edit to a baked note as a conflict rather than losing it', async () => {
+    const h = harness({ 'Index.md': QUERY });
+    await h.engine.sync();
+
+    h.github.commit({ 'Index.md': '| someone edited the generated table |' });
+    const report = await h.engine.sync();
+
+    expect(report.conflicts).toEqual(['Index.md']);
+    expect(h.vault.paths().filter((p) => p.includes('.conflict-'))).toHaveLength(1);
+  });
+
+  it('publishes the query verbatim when baking is turned off', async () => {
+    const h = harness({ 'Index.md': QUERY }, {}, { bakeDataview: false });
+
+    await h.engine.sync();
+
+    expect(h.github.files()['Index.md']).toBe(QUERY);
+  });
+
+  it('pulls a baked note normally once baking is off', async () => {
+    const h = harness({ 'Index.md': QUERY }, {}, { bakeDataview: false });
+    await h.engine.sync();
+
+    h.github.commit({ 'Index.md': 'rewritten remotely' });
+    await h.engine.sync();
+
+    expect(h.vault.contentOf('Index.md')).toBe('rewritten remotely');
   });
 });
 

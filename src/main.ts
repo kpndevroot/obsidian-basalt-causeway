@@ -9,6 +9,7 @@
 
 import { Notice, Plugin } from 'obsidian';
 
+import { createBaker } from './dataview/api';
 import { describeError } from './github/errors';
 import { BasaltSyncSettingTab } from './settings';
 import { SyncEngine, type SyncStatus } from './sync/engine';
@@ -46,6 +47,10 @@ export default class BasaltSyncPlugin extends Plugin {
         await this.persist();
       },
       onStatus: (status) => this.setStatus(status),
+      // Resolved once at load. Dataview registers its API during its own `onload`, and plugin
+      // load order is not guaranteed — so this is re-resolved lazily on first use rather than
+      // captured as a possibly-null value here.
+      bake: (content, path) => this.bakeWithDataview(content, path),
     });
 
     this.statusBar = new StatusBar(this.addStatusBarItem(), () => {
@@ -102,6 +107,28 @@ export default class BasaltSyncPlugin extends Plugin {
   onunload(): void {
     if (this.settleTimer !== null) clearTimeout(this.settleTimer);
     this.settleTimer = null;
+  }
+
+  /**
+   * Publish-time Dataview rendering, resolved lazily.
+   *
+   * Plugin load order is not guaranteed, so asking for Dataview's API during our own `onload`
+   * can find nothing even in a vault that has it. Resolving on first use — a sync, long after
+   * startup — always finds it if it is there.
+   *
+   * Failures are collected and reported once per sync rather than one Notice per query: a
+   * vault with a broken query in twenty daily notes would otherwise bury the screen.
+   */
+  private async bakeWithDataview(content: string, path: string): Promise<string> {
+    const failures: string[] = [];
+    const baker = createBaker(this.app, (file, error) => failures.push(`${file}: ${error}`));
+    if (!baker) return content;
+
+    const baked = await baker(content, path);
+    if (failures.length > 0) {
+      new Notice(`Basalt Sync: ${failures.length} Dataview query failed; published as-is.\n${failures[0]}`);
+    }
+    return baked;
   }
 
   // ---- persistence ----------------------------------------------------------

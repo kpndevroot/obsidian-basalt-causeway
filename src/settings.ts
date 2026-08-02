@@ -188,6 +188,20 @@ export class BasaltSyncSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
+      .setName('Publish Dataview results')
+      .setDesc(
+        'A dataview block holds a query, not an answer — Basalt has no query engine, so those notes arrive blank. ' +
+          'With this on, the published copy carries the rendered table instead. Your note keeps the live query; ' +
+          'only what reaches the repo changes. Such notes become publish-only: remote edits to them are not applied.',
+      )
+      .addToggle((toggle) =>
+        toggle.setValue(this.plugin.settings.bakeDataview).onChange(async (value) => {
+          this.plugin.settings.bakeDataview = value;
+          await this.plugin.persist();
+        }),
+      );
+
+    new Setting(containerEl)
       .setName('Maximum file size')
       .setDesc('Megabytes. Larger files are skipped with a notice; GitHub would reject them anyway.')
       .addText((text) =>

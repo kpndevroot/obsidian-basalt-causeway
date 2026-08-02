@@ -21,6 +21,14 @@ export type BasaltSyncSettings = {
   subfolder: string;
   /** Files larger than this are skipped with a `Notice`; GitHub would reject them anyway. */
   maxFileBytes: number;
+  /**
+   * Publish Dataview queries as their rendered results.
+   *
+   * On by default because the alternative is a note that arrives on the phone looking empty —
+   * the file on disk holds a query, and Basalt has no query engine to answer it. The cost is
+   * that such notes become publish-only; see the pull guard in `engine.ts`.
+   */
+  bakeDataview: boolean;
 };
 
 export const DEFAULT_SETTINGS: BasaltSyncSettings = {
@@ -34,6 +42,7 @@ export const DEFAULT_SETTINGS: BasaltSyncSettings = {
   exclude: [...DEFAULT_EXCLUDE],
   subfolder: '',
   maxFileBytes: 25 * 1024 * 1024,
+  bakeDataview: true,
 };
 
 /**

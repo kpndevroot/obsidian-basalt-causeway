@@ -82,6 +82,42 @@ layout.
 Files over 25 MB (configurable) are skipped with a notice — GitHub's blob limits would reject
 them anyway, and a 25 MB inline request body is a bad way to find that out.
 
+## Dataview
+
+A ```` ```dataview ```` block holds a **query, not an answer**. Dataview computes the answer at
+render time from Obsidian's metadata cache, so the bytes on disk contain nothing to display —
+which is why such a note reaches the phone looking empty. Basalt renders markdown with
+markdown-it and has no query engine.
+
+So the plugin **bakes** those blocks on the way out (on by default). Your note keeps the live
+query; the published copy carries the rendered table, wrapped in an HTML comment so a reader can
+tell generated content from prose:
+
+```markdown
+<!-- basalt-sync: generated from a dataview query — edit the note in Obsidian -->
+| File | Tags |
+| ---- | ---- |
+| ...  | ...  |
+<!-- /basalt-sync -->
+```
+
+Three consequences worth knowing:
+
+- **Those notes become publish-only.** What the repo holds for them is a rendered table, so
+  writing it back would replace your query with a frozen snapshot of its own output. Incoming
+  changes to them are skipped, with a notice; if the remote really did move, it surfaces as a
+  conflict rather than being lost.
+- **They are re-rendered every sync**, never cached. A query's result depends on the whole
+  vault — adding a note elsewhere changes what `TABLE ... FROM #tag` returns while the note
+  itself never changes.
+- **`dataviewjs` is published as-is.** It is arbitrary JavaScript rendering into a DOM node,
+  with no static markdown form, and executing vault code during a sync is not something this
+  plugin will do. A query that fails to run is likewise published verbatim — publishing an error
+  message into your note would be worse.
+
+Turn it off in settings to publish queries verbatim, at which point those notes sync in both
+directions like any other.
+
 ## Triggers
 
 | | |
