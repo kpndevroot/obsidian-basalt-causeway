@@ -40,13 +40,13 @@ export class RepoPicker extends FuzzySuggestModal<RepoSummary> {
     const repo = match.item;
     el.createEl('div', { text: repo.fullName });
     el.createEl('small', {
-      cls: 'basalt-sync-suggestion-detail',
+      cls: 'basalt-causeway-suggestion-detail',
       text: `${repo.private ? 'private' : 'public'} · default branch ${repo.defaultBranch}`,
     });
   }
 
   onChooseItem(repo: RepoSummary): void {
     this.onChoose(repo);
-    new Notice(`Basalt Sync: publishing to ${repo.fullName}@${repo.defaultBranch}.`);
+    new Notice(`Basalt Causeway: publishing to ${repo.fullName}@${repo.defaultBranch}.`);
   }
 }

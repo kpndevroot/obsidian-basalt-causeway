@@ -1,4 +1,4 @@
-# Basalt Sync
+# Basalt Causeway
 
 **Publish your Obsidian vault to a GitHub repo so [Basalt](https://github.com/kpndevroot/basalt) can read it on your phone.**
 
@@ -39,7 +39,7 @@ Not in the community store yet. Either:
 - **BRAT** — add `kpndevroot/obsidian-basalt` as a beta plugin.
 - **By hand** — download `main.js`, `manifest.json` and `styles.css` from a
   [release](https://github.com/kpndevroot/obsidian-basalt/releases) into
-  `<vault>/.obsidian/plugins/basalt-sync/`, then enable it in Community plugins.
+  `<vault>/.obsidian/plugins/basalt-causeway/`, then enable it in Community plugins.
 
 ## Setup
 
@@ -47,16 +47,16 @@ Not in the community store yet. Either:
    **Contents: read and write**, and give it an expiry. (Already signed in with the GitHub
    CLI? `gh auth token` prints one you can paste — it carries broader scopes than this plugin
    needs, so prefer a fine-grained token for anything long-lived.)
-2. Paste it into *Settings → Basalt Sync*. The account name appears once it resolves.
+2. Paste it into *Settings → Basalt Causeway*. The account name appears once it resolves.
 3. Hit **Choose repository…** and pick from the repositories that token can actually write to.
    Owner, repository **and branch** are all filled from GitHub — the branch especially, since
    it is the field whose mistakes are silent.
-4. Run **Basalt Sync: dry run** from the command palette. Read the output. Confirm the paths
+4. Run **Basalt Causeway: dry run** from the command palette. Read the output. Confirm the paths
    are what you expect and that **nothing under `.obsidian/` appears**.
-5. Run **Basalt Sync: sync now**.
+5. Run **Basalt Causeway: sync now**.
 
 > [!WARNING]
-> Your token is stored in plain text in `.obsidian/plugins/basalt-sync/data.json` — which
+> Your token is stored in plain text in `.obsidian/plugins/basalt-causeway/data.json` — which
 > lives inside the very vault this plugin publishes. Three things keep it out of your repo:
 > `.obsidian/**` is excluded by default, the exclude filter runs before anything reaches the
 > tree builder, and the push path throws unconditionally on any tree entry under `.obsidian/`
@@ -94,11 +94,11 @@ query; the published copy carries the rendered table, wrapped in an HTML comment
 tell generated content from prose:
 
 ```markdown
-<!-- basalt-sync: generated from a dataview query — edit the note in Obsidian -->
+<!-- basalt: generated from a dataview query — edit the note in Obsidian -->
 | File | Tags |
 | ---- | ---- |
 | ...  | ...  |
-<!-- /basalt-sync -->
+<!-- /basalt -->
 ```
 
 Three consequences worth knowing:
@@ -122,7 +122,7 @@ directions like any other.
 
 | | |
 |---|---|
-| **Manual** | `Basalt Sync: sync now`, the ribbon icon. Always available. |
+| **Manual** | `Basalt Causeway: sync now`, the ribbon icon. Always available. |
 | **Auto-push** | Off by default. On, it publishes after a settle window (5 s idle), never per keystroke — a commit per keystroke is a commit storm that makes Basalt re-download the vault each time. |
 | **Auto-pull** | Off by default. GitHub cannot notify us, so pulling is a poll or nothing. |
 
@@ -193,7 +193,7 @@ npm run dev      # esbuild watch
 npm run verify   # typecheck + build + tests
 ```
 
-Symlink the repo into `<vault>/.obsidian/plugins/basalt-sync/` and use the Hot-Reload plugin.
+Symlink the repo into `<vault>/.obsidian/plugins/basalt-causeway/` and use the Hot-Reload plugin.
 **Test against a throwaway vault and a throwaway repo** — this thing writes commits.
 
 ### Architecture

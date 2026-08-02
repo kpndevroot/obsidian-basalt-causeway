@@ -3,13 +3,13 @@ import { Notice, PluginSettingTab, Setting, type App } from 'obsidian';
 import { discoverLocalAccounts, resolveAccountToken, type LocalAccount } from './desktop/ghAccounts';
 import { describeError } from './github/errors';
 import { fetchViewer, fetchWritableRepos, type Viewer } from './github/identity';
-import type BasaltSyncPlugin from './main';
+import type BasaltCausewayPlugin from './main';
 import { DEFAULT_EXCLUDE } from './sync/exclude';
 import { obsidianTransport } from './transport';
 import { AccountPicker } from './ui/accountPicker';
 import { RepoPicker } from './ui/repoPicker';
 
-export class BasaltSyncSettingTab extends PluginSettingTab {
+export class BasaltCausewaySettingTab extends PluginSettingTab {
   /** Cached for the session so reopening settings does not re-hit the API. */
   private viewer: Viewer | null = null;
 
@@ -22,7 +22,7 @@ export class BasaltSyncSettingTab extends PluginSettingTab {
 
   constructor(
     app: App,
-    private readonly plugin: BasaltSyncPlugin,
+    private readonly plugin: BasaltCausewayPlugin,
   ) {
     super(app, plugin);
   }
@@ -106,7 +106,7 @@ export class BasaltSyncSettingTab extends PluginSettingTab {
       });
 
     token.descEl.createEl('div', {
-      cls: 'basalt-sync-hint',
+      cls: 'basalt-causeway-hint',
       text:
         'Already signed in with the GitHub CLI? `gh auth token` prints a token you can paste here. ' +
         'It carries whatever scopes gh was granted, which is broader than this plugin needs.',
@@ -117,9 +117,9 @@ export class BasaltSyncSettingTab extends PluginSettingTab {
     // hard assertion in plan.ts keep it out of every commit, but the user still deserves to
     // know where their token sits and to scope it accordingly.
     token.descEl.createEl('div', {
-      cls: 'basalt-sync-token-warning',
+      cls: 'basalt-causeway-token-warning',
       text:
-        'Stored in plain text in .obsidian/plugins/basalt-sync/data.json — inside this vault. ' +
+        'Stored in plain text in .obsidian/plugins/basalt-causeway/data.json — inside this vault. ' +
         'It is never published: .obsidian/** is excluded and the push path refuses any tree ' +
         'containing it. Scope the token to this single repo and give it an expiry anyway.',
     });
@@ -283,7 +283,7 @@ export class BasaltSyncSettingTab extends PluginSettingTab {
       });
 
       if (repos.length === 0) {
-        new Notice('Basalt Sync: this token cannot write to any repository.');
+        new Notice('Basalt Causeway: this token cannot write to any repository.');
         return;
       }
 
@@ -295,7 +295,7 @@ export class BasaltSyncSettingTab extends PluginSettingTab {
         void this.plugin.persist().then(() => this.display());
       }).open();
     } catch (err) {
-      new Notice(`Basalt Sync: ${describeError(err)}`);
+      new Notice(`Basalt Causeway: ${describeError(err)}`);
     }
   }
 
@@ -325,7 +325,7 @@ export class BasaltSyncSettingTab extends PluginSettingTab {
           const token = resolveAccountToken(account);
           if (!token) {
             new Notice(
-              `Basalt Sync: could not read a token for ${account.login}. ` +
+              `Basalt Causeway: could not read a token for ${account.login}. ` +
                 'Run `gh auth login`, or paste a token below.',
             );
             return;

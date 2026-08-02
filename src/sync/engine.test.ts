@@ -4,17 +4,17 @@ import { ScopeError } from '../github/errors';
 import { FakeGitHub } from '../test/fakeGitHub';
 import { FakeVault } from '../test/fakeVault';
 import { clearNotices, notices } from '../test/obsidian';
-import { DEFAULT_SETTINGS, EMPTY_BASELINE, type Baseline, type BasaltSyncSettings } from '../types';
+import { DEFAULT_SETTINGS, EMPTY_BASELINE, type Baseline, type BasaltCausewaySettings } from '../types';
 import { SyncEngine } from './engine';
 
 function harness(
   vaultFiles: Record<string, string | Uint8Array> = {},
   repoFiles: Record<string, string | Uint8Array> = {},
-  overrides: Partial<BasaltSyncSettings> = {},
+  overrides: Partial<BasaltCausewaySettings> = {},
 ) {
   const vault = new FakeVault(vaultFiles);
   const github = new FakeGitHub(repoFiles);
-  const settings: BasaltSyncSettings = {
+  const settings: BasaltCausewaySettings = {
     ...DEFAULT_SETTINGS,
     owner: 'kpndevroot',
     repo: 'my-vault',
@@ -30,7 +30,7 @@ function harness(
   const bake = async (content: string) =>
     content.replace(/```dataview\n([\s\S]*?)```\n?/g, (_match, query: string) => {
       bakeCount += 1;
-      return `<!-- basalt-sync: generated -->\n| ${query.trim()} → row ${rows} |\n<!-- /basalt-sync -->\n`;
+      return `<!-- basalt-causeway: generated -->\n| ${query.trim()} → row ${rows} |\n<!-- /basalt-causeway -->\n`;
     });
   let rows = 1;
 
@@ -92,7 +92,7 @@ describe('the first sync', () => {
   it('never publishes the plugin config holding the token', async () => {
     const h = harness({
       'a.md': 'alpha',
-      '.obsidian/plugins/basalt-sync/data.json': '{"token":"github_pat_SECRET"}',
+      '.obsidian/plugins/basalt-causeway/data.json': '{"token":"github_pat_SECRET"}',
       '.obsidian/appearance.json': '{}',
       '.trash/old.md': 'deleted',
       '.DS_Store': 'junk',
@@ -626,7 +626,7 @@ describe('dataview', () => {
     const published = h.github.files()['Index.md']!;
     expect(published).not.toContain('```dataview');
     expect(published).toContain('TABLE file.name FROM #note → row 1');
-    expect(published).toContain('<!-- basalt-sync:');
+    expect(published).toContain('<!-- basalt-causeway:');
   });
 
   it('leaves the note in the vault holding the live query', async () => {
@@ -748,7 +748,7 @@ describe('pendingCount', () => {
     const h = harness({ 'a.md': 'alpha' });
     await h.engine.sync();
 
-    h.vault.set('.obsidian/plugins/basalt-sync/data.json', '{"token":"x"}');
+    h.vault.set('.obsidian/plugins/basalt-causeway/data.json', '{"token":"x"}');
 
     expect(await h.engine.pendingCount()).toBe(0);
   });

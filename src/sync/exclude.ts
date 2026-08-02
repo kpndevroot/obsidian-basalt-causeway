@@ -2,7 +2,7 @@
  * Which vault paths never leave the machine.
  *
  * This is the single most safety-critical pure function in the plugin. `saveData()` writes
- * the GitHub token in plaintext to `<vault>/.obsidian/plugins/basalt-sync/data.json` — which
+ * the GitHub token in plaintext to `<vault>/.obsidian/plugins/basalt-causeway/data.json` — which
  * lives *inside the very vault this plugin pushes*. Without `.obsidian/**` excluded, the
  * first sync commits your token to GitHub. `plan.ts` applies this filter before anything
  * reaches the tree builder, and `assertNoSecrets` in `plan.ts` re-checks it at the boundary.

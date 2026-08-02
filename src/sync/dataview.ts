@@ -90,9 +90,14 @@ export type RenderQuery = (query: string, kind: DataviewKind, path: string) => P
  * and GitHub hides too. They exist so a human reading the repo can tell generated content from
  * something they wrote — silently substituting one for the other would be the kind of thing you
  * discover much later and cannot explain.
+ *
+ * Deliberately `basalt:` and not the plugin's own name. This is a wire format: it is written
+ * into commits that outlive any release, and `isBaked` has to keep recognising markers written
+ * by every earlier version. Tying it to a product name means a rename silently orphans every
+ * block ever published. `basalt` is the thing that will not change.
  */
-const OPEN_MARKER = '<!-- basalt-sync: generated from a dataview query — edit the note in Obsidian -->';
-const CLOSE_MARKER = '<!-- /basalt-sync -->';
+const OPEN_MARKER = '<!-- basalt: generated from a dataview query — edit the note in Obsidian -->';
+const CLOSE_MARKER = '<!-- /basalt -->';
 
 /** True for content this module produced, so a round trip can be recognised and refused. */
 export function isBaked(content: string): boolean {

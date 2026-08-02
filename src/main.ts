@@ -11,18 +11,18 @@ import { Notice, Plugin } from 'obsidian';
 
 import { createBaker } from './dataview/api';
 import { describeError } from './github/errors';
-import { BasaltSyncSettingTab } from './settings';
+import { BasaltCausewaySettingTab } from './settings';
 import { SyncEngine, type SyncStatus } from './sync/engine';
 import { describePlan } from './sync/plan';
 import { obsidianTransport } from './transport';
-import { DEFAULT_SETTINGS, EMPTY_BASELINE, type Baseline, type BasaltSyncSettings, type PersistedData } from './types';
+import { DEFAULT_SETTINGS, EMPTY_BASELINE, type Baseline, type BasaltCausewaySettings, type PersistedData } from './types';
 import { BASALT_ICON_ID, registerBasaltIcon } from './ui/basaltIcon';
 import { ConflictModal } from './ui/conflictModal';
 import { DryRunModal } from './ui/dryRunModal';
 import { StatusBar } from './ui/statusBar';
 
-export default class BasaltSyncPlugin extends Plugin {
-  settings: BasaltSyncSettings = { ...DEFAULT_SETTINGS };
+export default class BasaltCausewayPlugin extends Plugin {
+  settings: BasaltCausewaySettings = { ...DEFAULT_SETTINGS };
   baseline: Baseline = { ...EMPTY_BASELINE };
 
   private engine!: SyncEngine;
@@ -58,7 +58,7 @@ export default class BasaltSyncPlugin extends Plugin {
         await this.engine.keepLocalVersion(path);
         this.status = { ...this.status, conflicts: this.status.conflicts.filter((p) => p !== path) };
         this.renderStatus();
-        new Notice(`Basalt Sync: keeping your version of ${path}. Sync to publish it.`);
+        new Notice(`Basalt Causeway: keeping your version of ${path}. Sync to publish it.`);
       }).open();
     });
     this.renderStatus();
@@ -75,9 +75,9 @@ export default class BasaltSyncPlugin extends Plugin {
       callback: () => void this.runSync(true),
     });
 
-    this.addRibbonIcon(BASALT_ICON_ID, 'Basalt Sync: sync now', () => void this.runSync(false));
+    this.addRibbonIcon(BASALT_ICON_ID, 'Basalt Causeway: sync now', () => void this.runSync(false));
 
-    this.addSettingTab(new BasaltSyncSettingTab(this.app, this));
+    this.addSettingTab(new BasaltCausewaySettingTab(this.app, this));
 
     // `registerEvent` / `registerInterval` rather than hand-rolled cleanup: Obsidian releases
     // both on unload automatically, and the docs are explicit that a listener surviving a
@@ -126,7 +126,7 @@ export default class BasaltSyncPlugin extends Plugin {
 
     const baked = await baker(content, path);
     if (failures.length > 0) {
-      new Notice(`Basalt Sync: ${failures.length} Dataview query failed; published as-is.\n${failures[0]}`);
+      new Notice(`Basalt Causeway: ${failures.length} Dataview query failed; published as-is.\n${failures[0]}`);
     }
     return baked;
   }
@@ -153,7 +153,7 @@ export default class BasaltSyncPlugin extends Plugin {
     this.baseline = { commitSha: null, files: {}, conflicts: {} };
     this.status = { ...this.status, conflicts: [], message: 'Baseline reset.' };
     await this.persist();
-    new Notice('Basalt Sync: baseline reset. The next sync republishes everything.');
+    new Notice('Basalt Causeway: baseline reset. The next sync republishes everything.');
   }
 
   // ---- triggers -------------------------------------------------------------
@@ -204,11 +204,11 @@ export default class BasaltSyncPlugin extends Plugin {
         parts.push(`pulled ${report.pulled.written} written, ${report.pulled.deleted} deleted`);
       }
       if (report.conflicts.length > 0) parts.push(`${report.conflicts.length} conflict(s)`);
-      new Notice(`Basalt Sync: ${parts.length > 0 ? parts.join(' · ') : 'already up to date'}.`);
+      new Notice(`Basalt Causeway: ${parts.length > 0 ? parts.join(' · ') : 'already up to date'}.`);
     } catch (err) {
       // Auto-sync failures are still surfaced. A silent background failure is how a user
       // discovers weeks later that nothing has reached their phone.
-      new Notice(`Basalt Sync: ${describeError(err)}`);
+      new Notice(`Basalt Causeway: ${describeError(err)}`);
     }
   }
 

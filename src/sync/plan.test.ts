@@ -123,7 +123,7 @@ describe('buildPushPlan', () => {
 
 describe('assertNoSecrets', () => {
   it('throws when a plugin config path reaches the tree builder', () => {
-    expect(() => assertNoSecrets(['.obsidian/plugins/basalt-sync/data.json'], '')).toThrow(/never published/);
+    expect(() => assertNoSecrets(['.obsidian/plugins/basalt-causeway/data.json'], '')).toThrow(/never published/);
   });
 
   it('sees through the subfolder prefix', () => {

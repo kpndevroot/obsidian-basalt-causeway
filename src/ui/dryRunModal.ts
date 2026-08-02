@@ -19,9 +19,9 @@ export class DryRunModal extends Modal {
   onOpen(): void {
     const { contentEl } = this;
     contentEl.empty();
-    contentEl.createEl('h2', { text: 'Basalt Sync — dry run' });
+    contentEl.createEl('h2', { text: 'Basalt Causeway — dry run' });
     contentEl.createEl('p', { text: 'Nothing was written. This is exactly what a sync would do:' });
-    contentEl.createEl('pre', { text: this.body, cls: 'basalt-sync-dry-run' });
+    contentEl.createEl('pre', { text: this.body, cls: 'basalt-causeway-dry-run' });
   }
 
   onClose(): void {

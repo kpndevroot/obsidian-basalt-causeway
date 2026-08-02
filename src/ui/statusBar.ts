@@ -9,18 +9,18 @@
  */
 
 import type { SyncStatus } from '../sync/engine';
-import type { BasaltSyncSettings } from '../types';
+import type { BasaltCausewaySettings } from '../types';
 
 export class StatusBar {
   constructor(
     private readonly el: HTMLElement,
     private readonly onClick: () => void,
   ) {
-    this.el.addClass('basalt-sync-status');
+    this.el.addClass('basalt-causeway-status');
     this.el.onclick = () => this.onClick();
   }
 
-  render(status: SyncStatus, settings: BasaltSyncSettings): void {
+  render(status: SyncStatus, settings: BasaltCausewaySettings): void {
     const target =
       settings.owner && settings.repo
         ? `${settings.owner}/${settings.repo}@${settings.branch}`

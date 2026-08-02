@@ -1,6 +1,6 @@
 {
-  "id": "basalt-sync",
-  "name": "Basalt Sync",
+  "id": "basalt-causeway",
+  "name": "Basalt Causeway",
   "version": "0.1.0",
   "minAppVersion": "1.5.0",
   "description": "Publish this vault to a GitHub repo so Basalt can read it on mobile.",

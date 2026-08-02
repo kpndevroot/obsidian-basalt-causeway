@@ -1,6 +1,6 @@
 /**
  * The push planner: `(local files, remote tree, baseline) → PushPlan`. Pure — no vault, no
- * network, no clock. Everything the `Basalt Sync: dry run` command prints comes from here,
+ * network, no clock. Everything the `Basalt Causeway: dry run` command prints comes from here,
  * which is the point: you can read exactly what a sync would do before it does it.
  */
 

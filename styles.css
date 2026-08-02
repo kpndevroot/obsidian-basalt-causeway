@@ -1,35 +1,35 @@
-.basalt-sync-status {
+.basalt-causeway-status {
   cursor: pointer;
 }
 
-.basalt-sync-conflicts {
+.basalt-causeway-conflicts {
   max-height: 40vh;
   overflow-y: auto;
   padding-left: 1.2em;
 }
 
-.basalt-sync-conflicts a {
+.basalt-causeway-conflicts a {
   cursor: pointer;
 }
 
-.basalt-sync-token-warning {
+.basalt-causeway-token-warning {
   color: var(--text-warning);
   font-size: var(--font-ui-smaller);
   margin-top: 0.4em;
 }
 
-.basalt-sync-hint {
+.basalt-causeway-hint {
   color: var(--text-muted);
   font-size: var(--font-ui-smaller);
   margin-top: 0.4em;
 }
 
-.basalt-sync-suggestion-detail {
+.basalt-causeway-suggestion-detail {
   display: block;
   color: var(--text-muted);
 }
 
-.basalt-sync-dry-run {
+.basalt-causeway-dry-run {
   max-height: 50vh;
   overflow: auto;
   white-space: pre;

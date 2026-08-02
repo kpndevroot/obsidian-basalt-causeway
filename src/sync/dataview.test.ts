@@ -68,7 +68,7 @@ describe('bakeDataview', () => {
 
   it('marks generated content so a reader can tell it apart from prose', async () => {
     const out = await bakeDataview('```dataview\nTABLE x\n```\n', 'note.md', render);
-    expect(out).toContain('<!-- basalt-sync:');
+    expect(out).toContain('<!-- basalt:');
     expect(isBaked(out)).toBe(true);
   });
 

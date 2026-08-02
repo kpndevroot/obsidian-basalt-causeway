@@ -15,7 +15,7 @@ export class GitHubError extends Error {}
 
 /** 401, or a 403 that is not a rate limit. The token is bad, expired, or revoked. */
 export class AuthError extends GitHubError {
-  constructor(message = 'Access revoked — check your token in Basalt Sync settings.') {
+  constructor(message = 'Access revoked — check your token in Basalt Causeway settings.') {
     super(message);
     this.name = 'AuthError';
   }

@@ -24,7 +24,7 @@ export class ConflictModal extends Modal {
   onOpen(): void {
     const { contentEl } = this;
     contentEl.empty();
-    contentEl.createEl('h2', { text: 'Basalt Sync' });
+    contentEl.createEl('h2', { text: 'Basalt Causeway' });
 
     if (this.conflicts.length === 0) {
       contentEl.createEl('p', { text: this.lastMessage || 'No conflicts. Everything is published.' });
@@ -38,7 +38,7 @@ export class ConflictModal extends Modal {
         'delete the sidecar, then sync again.',
     });
 
-    const list = contentEl.createEl('ul', { cls: 'basalt-sync-conflicts' });
+    const list = contentEl.createEl('ul', { cls: 'basalt-causeway-conflicts' });
     for (const path of this.conflicts) {
       const item = list.createEl('li');
       const link = item.createEl('a', { text: path, href: '#' });

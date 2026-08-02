@@ -1,6 +1,6 @@
 import { DEFAULT_EXCLUDE } from './sync/exclude';
 
-export type BasaltSyncSettings = {
+export type BasaltCausewaySettings = {
   owner: string;
   repo: string;
   /**
@@ -31,7 +31,7 @@ export type BasaltSyncSettings = {
   bakeDataview: boolean;
 };
 
-export const DEFAULT_SETTINGS: BasaltSyncSettings = {
+export const DEFAULT_SETTINGS: BasaltCausewaySettings = {
   owner: '',
   repo: '',
   branch: 'main',
@@ -85,6 +85,6 @@ export const EMPTY_BASELINE: Baseline = { commitSha: null, files: {}, conflicts:
 
 /** The single `data.json` payload. Settings and baseline share one file, one write. */
 export type PersistedData = {
-  settings: BasaltSyncSettings;
+  settings: BasaltCausewaySettings;
   baseline: Baseline;
 };

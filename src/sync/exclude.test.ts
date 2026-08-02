@@ -8,7 +8,7 @@ describe('compileExclude with the defaults', () => {
   // The reason this whole module exists: data.json holds the GitHub token in plaintext and
   // lives inside the vault being published.
   it('excludes the plugin data file holding the token', () => {
-    expect(excluded('.obsidian/plugins/basalt-sync/data.json')).toBe(true);
+    expect(excluded('.obsidian/plugins/basalt-causeway/data.json')).toBe(true);
   });
 
   it('excludes everything under .obsidian, however deep', () => {

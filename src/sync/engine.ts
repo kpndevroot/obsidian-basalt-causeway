@@ -14,7 +14,7 @@ import { call, type GitHubContext, type Transport } from '../github/client';
 import { compareCommits, readBlob } from '../github/compare';
 import { ConflictError, describeError } from '../github/errors';
 import { createBlob, createCommit, createTree, readHead, readTree, updateRef, type TreeEntry } from '../github/trees';
-import type { Baseline, BasaltSyncSettings } from '../types';
+import type { Baseline, BasaltCausewaySettings } from '../types';
 import { pushMessage } from './commitMessages';
 import { compare, conflictSidecarPath } from './conflict';
 import { containsDataview } from './dataview';
@@ -63,7 +63,7 @@ export type SyncReport = {
 export type EngineDeps = {
   vault: Vault;
   transport: Transport;
-  settings: () => BasaltSyncSettings;
+  settings: () => BasaltCausewaySettings;
   baseline: () => Baseline;
   saveBaseline: (baseline: Baseline) => Promise<void>;
   onStatus: (status: SyncStatus) => void;
@@ -102,9 +102,9 @@ export class SyncEngine {
 
   private context(): GitHubContext {
     const s = this.deps.settings();
-    if (!s.owner || !s.repo) throw new Error('Set the GitHub owner and repository in Basalt Sync settings.');
-    if (!s.token) throw new Error('Add a GitHub token in Basalt Sync settings.');
-    if (!s.branch) throw new Error('Set the branch in Basalt Sync settings.');
+    if (!s.owner || !s.repo) throw new Error('Set the GitHub owner and repository in Basalt Causeway settings.');
+    if (!s.token) throw new Error('Add a GitHub token in Basalt Causeway settings.');
+    if (!s.branch) throw new Error('Set the branch in Basalt Causeway settings.');
     return { transport: this.deps.transport, owner: s.owner, repo: s.repo, token: s.token };
   }
 
@@ -336,12 +336,12 @@ export class SyncEngine {
 
       if (conflict.remoteSha === null) {
         conflicts[conflict.path] = { sidecar: null, remoteSha: null };
-        new Notice(`Basalt Sync: ${vaultPath} was deleted remotely but changed here — kept your copy.`);
+        new Notice(`Basalt Causeway: ${vaultPath} was deleted remotely but changed here — kept your copy.`);
       } else {
         const sidecar = conflictSidecarPath(vaultPath, conflict.remoteSha);
         await this.write(sidecar, await readBlob(ctx, conflict.remoteSha));
         conflicts[conflict.path] = { sidecar, remoteSha: conflict.remoteSha };
-        new Notice(`Basalt Sync: conflict on ${vaultPath} — remote copy saved as ${sidecar}`);
+        new Notice(`Basalt Causeway: conflict on ${vaultPath} — remote copy saved as ${sidecar}`);
       }
       changed = true;
     }
@@ -437,7 +437,7 @@ export class SyncEngine {
 
     if (skippedBaked > 0) {
       new Notice(
-        `Basalt Sync: ${skippedBaked} incoming change(s) skipped — those notes publish Dataview results, ` +
+        `Basalt Causeway: ${skippedBaked} incoming change(s) skipped — those notes publish Dataview results, ` +
           'so the desktop copy wins.',
       );
     }
@@ -501,7 +501,7 @@ export class SyncEngine {
 
       for (const skipped of plan.skipped) {
         new Notice(
-          `Basalt Sync: skipped ${skipped.path} — ${(skipped.size / 1024 / 1024).toFixed(1)} MB exceeds the size limit.`,
+          `Basalt Causeway: skipped ${skipped.path} — ${(skipped.size / 1024 / 1024).toFixed(1)} MB exceeds the size limit.`,
         );
       }
 
