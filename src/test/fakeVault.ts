@@ -6,7 +6,7 @@
  * corruption a text/binary misclassification would otherwise cause silently.
  */
 
-import type { TFile, Vault } from 'obsidian';
+import type { TAbstractFile, TFile, Vault } from 'obsidian';
 
 type Entry = { bytes: Uint8Array; mtime: number };
 
@@ -20,7 +20,15 @@ export class FakeVault {
   /** Paths hard-deleted. Any entry here is a bug: a remote deletion must stay recoverable. */
   readonly hardDeleted: string[] = [];
 
-  constructor(seed: Record<string, string | Uint8Array> = {}) {
+  /**
+   * Overridable so tests can run a vault whose config folder is *not* `.obsidian`. The forbidden
+   * -path backstop keys off this, and hardcoding the default name is precisely the bug the
+   * `configDir` tests exist to catch.
+   */
+  configDir: string;
+
+  constructor(seed: Record<string, string | Uint8Array> = {}, configDir = '.obsidian') {
+    this.configDir = configDir;
     for (const [path, content] of Object.entries(seed)) this.set(path, content);
   }
 
@@ -148,5 +156,19 @@ export class FakeVault {
   async delete(file: TFile): Promise<void> {
     this.hardDeleted.push(file.path);
     this.files.delete(file.path);
+  }
+
+  /**
+   * The `FileManager` slice `SyncEngine` depends on, backed by this vault's own storage so the
+   * existing `trashed` assertions keep meaning what they meant. Real `trashFile` takes no
+   * `system` flag — the user's preference decides — which is the whole point of the switch.
+   */
+  asFileManager(): { trashFile: (file: TAbstractFile) => Promise<void> } {
+    return {
+      trashFile: async (file: TAbstractFile) => {
+        this.trashed.push(file.path);
+        this.files.delete(file.path);
+      },
+    };
   }
 }

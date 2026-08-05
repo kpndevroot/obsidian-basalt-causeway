@@ -10,6 +10,12 @@ on:
 
 permissions:
   contents: write
+  # Provenance attestation is a signed claim that these exact bytes came out of this workflow,
+  # on this repo, at this commit. `id-token` mints the OIDC token that identifies the run to
+  # Sigstore; `attestations` lets the result be written back to the repo. Both are required —
+  # with either missing the attest step fails rather than degrading.
+  id-token: write
+  attestations: write
 
 jobs:
   release:
@@ -34,6 +40,18 @@ jobs:
             echo "Tag $tag does not match manifest version $manifest" >&2
             exit 1
           fi
+
+      # Attest *before* the release is created, so there is no window in which the assets are
+      # downloadable but unverifiable. Only the built assets are listed: manifest.json is source,
+      # committed and reviewable in the tree, so a provenance claim over it would assert nothing
+      # the tag does not already. Users verify with:
+      #   gh attestation verify main.js --repo kpndevroot/obsidian-basalt
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            main.js
+            styles.css
 
       - name: Create the release
         env:

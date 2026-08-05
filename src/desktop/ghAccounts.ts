@@ -195,9 +195,14 @@ export function resolveTokenWith(deps: CliDeps, account: LocalAccount): string |
  * Fetched through the global rather than imported at the top of the file: a static
  * `import 'fs'` is evaluated on load, which would break the plugin outright on Obsidian
  * mobile — the platform this module is designed to be absent on.
+ *
+ * Read off `window` rather than `globalThis`. The two are the same object in the Electron
+ * renderer, and `require` is an Electron injection rather than anything per-window, so this is
+ * not the popout-safety concern the lint rule usually guards; `window` is simply the spelling
+ * that holds on every platform Obsidian runs on, and on mobile it is absent and we return null.
  */
 function nodeRequire(): ((id: string) => unknown) | null {
-  const globalRequire = (globalThis as { require?: (id: string) => unknown }).require;
+  const globalRequire = (window as unknown as { require?: (id: string) => unknown }).require;
   return typeof globalRequire === 'function' ? globalRequire : null;
 }
 
@@ -217,7 +222,8 @@ export function discoverLocalAccounts(): LocalAccount[] {
       existsSync: (p: string) => boolean;
       readFileSync: (p: string, enc: string) => string;
     };
-    const env = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env;
+    const env = (window as unknown as { process?: { env?: Record<string, string | undefined> } }).process
+      ?.env;
 
     return discoverWith({
       homedir: () => os.homedir(),

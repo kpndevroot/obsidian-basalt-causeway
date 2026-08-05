@@ -7,7 +7,14 @@
  * make every phone edit produce a redundant desktop commit.
  */
 
-import { arrayBufferToBase64, base64ToArrayBuffer, Notice, type TFile, type Vault } from 'obsidian';
+import {
+  arrayBufferToBase64,
+  base64ToArrayBuffer,
+  Notice,
+  type FileManager,
+  type TFile,
+  type Vault,
+} from 'obsidian';
 
 import { gitBlobSha } from '../github/blobSha';
 import { call, type GitHubContext, type Transport } from '../github/client';
@@ -52,16 +59,31 @@ export type SyncStatus = {
   message: string;
 };
 
+/** One vault file a pull touched, and how. */
+export type PulledPath = { op: 'write' | 'delete'; path: string };
+
 export type SyncReport = {
   dryRun: boolean;
   plan: PushPlan;
-  pulled: { written: number; deleted: number };
+  /**
+   * `paths` is vault-relative and carries what the counts cannot: *which* notes a sync rewrote
+   * under you. A pull is the half of a sync the user did not initiate, so it is the half worth
+   * being able to audit afterwards.
+   */
+  pulled: { written: number; deleted: number; paths: PulledPath[] };
   conflicts: string[];
   commitSha: string | null;
 };
 
 export type EngineDeps = {
   vault: Vault;
+  /**
+   * Only for `trashFile`, which lives on `FileManager` rather than `Vault`. It is the one that
+   * honours the user's "Deleted files" preference — system trash, vault `.trash`, or permanent —
+   * where `Vault.trash(file, system)` makes that choice on their behalf. Narrowed to the single
+   * method so the fake in the tests stays a two-line object.
+   */
+  fileManager: Pick<FileManager, 'trashFile'>;
   transport: Transport;
   settings: () => BasaltCausewaySettings;
   baseline: () => Baseline;
@@ -269,7 +291,7 @@ export class SyncEngine {
     const settings = this.deps.settings();
     let head = await readHead(ctx, settings.branch);
 
-    const pulled = dryRun ? { written: 0, deleted: 0 } : await this.pull(ctx, head.commitSha);
+    const pulled = dryRun ? { written: 0, deleted: 0, paths: [] } : await this.pull(ctx, head.commitSha);
     if (!dryRun && pulled.written + pulled.deleted > 0) {
       // Applying remote changes rewrote local files; their mtimes moved, so the cache entries
       // for those paths are stale by construction. Re-read HEAD too — a pull that took a
@@ -330,7 +352,7 @@ export class SyncEngine {
 
     if (record.sidecar !== null) {
       const sidecar = this.deps.vault.getFileByPath(record.sidecar);
-      if (sidecar) await this.deps.vault.trash(sidecar, true);
+      if (sidecar) await this.deps.fileManager.trashFile(sidecar);
     }
 
     const files = { ...baseline.files };
@@ -391,9 +413,12 @@ export class SyncEngine {
    * vault the user just pointed at an existing repo. The first sync publishes; the second
    * onwards is a real two-way loop.
    */
-  private async pull(ctx: GitHubContext, headSha: string): Promise<{ written: number; deleted: number }> {
+  private async pull(
+    ctx: GitHubContext,
+    headSha: string,
+  ): Promise<{ written: number; deleted: number; paths: PulledPath[] }> {
     const baseline = this.deps.baseline();
-    if (!baseline.commitSha || baseline.commitSha === headSha) return { written: 0, deleted: 0 };
+    if (!baseline.commitSha || baseline.commitSha === headSha) return { written: 0, deleted: 0, paths: [] };
 
     const excluded = compileExclude(this.deps.settings().exclude);
     const { files, complete } = await compareCommits(ctx, baseline.commitSha, headSha);
@@ -409,6 +434,7 @@ export class SyncEngine {
     }
 
     const nextFiles = { ...baseline.files };
+    const paths: PulledPath[] = [];
     let written = 0;
     let deleted = 0;
     let skippedBaked = 0;
@@ -429,12 +455,12 @@ export class SyncEngine {
       if (vaultPath === null) continue;
 
       // Unconditional, and checked *before* the user's exclude list — which is a free-text field
-      // they can empty. Without this a remote commit can drop `.obsidian/plugins/x/main.js` into
-      // the vault, and Obsidian executes it on next load: anyone who can push to the repo gets
-      // code execution on this machine. It could also overwrite this plugin's own `data.json`.
-      // The push path has had this backstop since day one; the pull path is the more dangerous
-      // direction and had only the settings-dependent filter.
-      if (isForbiddenPath(vaultPath)) continue;
+      // they can empty. Without this a remote commit can drop `<configDir>/plugins/x/main.js`
+      // into the vault, and Obsidian executes it on next load: anyone who can push to the repo
+      // gets code execution on this machine. It could also overwrite this plugin's own
+      // `data.json`. The push path has had this backstop since day one; the pull path is the
+      // more dangerous direction and had only the settings-dependent filter.
+      if (isForbiddenPath(vaultPath, this.deps.vault.configDir)) continue;
 
       if (excluded(vaultPath)) continue;
 
@@ -466,16 +492,20 @@ export class SyncEngine {
 
         case 'base':
           if (remoteSha === null) {
-            // `trash`, never `delete`: a remote deletion must stay recoverable locally.
-            if (local) await this.deps.vault.trash(local, true);
+            // Trashed, never `delete`d: a remote deletion must stay recoverable locally.
+            // `trashFile` routes to wherever the user's own deletion preference says, which for
+            // an unattended sync matters more than for a delete they asked for.
+            if (local) await this.deps.fileManager.trashFile(local);
             delete nextFiles[repoPath];
             this.hashCache.delete(vaultPath);
             deleted += 1;
+            paths.push({ op: 'delete', path: vaultPath });
           } else {
             await this.write(vaultPath, await readBlob(ctx, remoteSha));
             nextFiles[repoPath] = remoteSha;
             this.hashCache.delete(vaultPath);
             written += 1;
+            paths.push({ op: 'write', path: vaultPath });
           }
           break;
 
@@ -496,7 +526,7 @@ export class SyncEngine {
     }
 
     await this.deps.saveBaseline({ ...this.deps.baseline(), commitSha: headSha, files: nextFiles });
-    return { written, deleted };
+    return { written, deleted, paths };
   }
 
   /** Create-or-update a vault path from base64 bytes, making parent folders as needed. */
@@ -579,6 +609,7 @@ export class SyncEngine {
       assertNoSecrets(
         plan.ops.map((op) => op.path),
         settings.subfolder,
+        this.deps.vault.configDir,
       );
 
       const entries = await this.treeEntries(ctx, plan);

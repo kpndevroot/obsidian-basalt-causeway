@@ -1,6 +1,6 @@
 import esbuild from 'esbuild';
 import process from 'process';
-import builtins from 'builtin-modules';
+import { builtinModules } from 'node:module';
 
 const banner = `/*
 This is a generated file. Source lives in src/ — see https://github.com/kpndevroot/obsidian-basalt
@@ -29,7 +29,12 @@ const context = await esbuild.context({
     '@lezer/common',
     '@lezer/highlight',
     '@lezer/lr',
-    ...builtins,
+    // Node's own list, rather than the `builtin-modules` package — it is the same data without
+    // the dependency. Both spellings are listed because `builtinModules` reports bare names
+    // ('fs'), while an import may equally be written 'node:fs', and esbuild matches externals
+    // literally: a bare-only list silently bundles the prefixed form.
+    ...builtinModules,
+    ...builtinModules.map((name) => `node:${name}`),
   ],
   format: 'cjs',
   target: 'es2018',

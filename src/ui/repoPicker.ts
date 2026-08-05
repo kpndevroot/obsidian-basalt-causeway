@@ -38,7 +38,7 @@ export class RepoPicker extends FuzzySuggestModal<RepoSummary> {
 
   renderSuggestion(match: FuzzyMatch<RepoSummary>, el: HTMLElement): void {
     const repo = match.item;
-    el.createEl('div', { text: repo.fullName });
+    el.createDiv({ text: repo.fullName });
     el.createEl('small', {
       cls: 'basalt-causeway-suggestion-detail',
       text: `${repo.private ? 'private' : 'public'} · default branch ${repo.defaultBranch}`,

@@ -2,7 +2,7 @@
   "id": "basalt-causeway",
   "name": "Basalt Causeway",
   "version": "0.1.0",
-  "minAppVersion": "1.5.0",
+  "minAppVersion": "1.6.6",
   "description": "Publish this vault to a GitHub repo so Basalt can read it on mobile.",
   "author": "kpndevroot",
   "authorUrl": "https://github.com/kpndevroot",

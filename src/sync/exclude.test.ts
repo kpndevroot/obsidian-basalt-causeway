@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
-import { compileExclude, DEFAULT_EXCLUDE } from './exclude';
+import { compileExclude, defaultExclude } from './exclude';
 
 describe('compileExclude with the defaults', () => {
-  const excluded = compileExclude(DEFAULT_EXCLUDE);
+  const excluded = compileExclude(defaultExclude('.obsidian'));
 
   // The reason this whole module exists: data.json holds the GitHub token in plaintext and
   // lives inside the vault being published.
@@ -19,6 +19,15 @@ describe('compileExclude with the defaults', () => {
   it('excludes .trash and .git', () => {
     expect(excluded('.trash/deleted note.md')).toBe(true);
     expect(excluded('.git/config')).toBe(true);
+  });
+
+  // A vault can contain another vault. The root-anchored `.obsidian/**` missed the nested copy,
+  // and the plugin's own data.json — token included — was published from one.
+  it('excludes a config folder nested inside the vault, not just the root one', () => {
+    expect(excluded('kpndevroot/.obsidian/plugins/basalt-causeway/data.json')).toBe(true);
+    expect(excluded('a/b/c/.obsidian/app.json')).toBe(true);
+    expect(excluded('team/notes/.git/config')).toBe(true);
+    expect(excluded('archive/.trash/old.md')).toBe(true);
   });
 
   it('excludes conflict sidecars so they never reach the phone as real notes', () => {

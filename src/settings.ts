@@ -3,12 +3,29 @@ import { Notice, Platform, PluginSettingTab, Setting, type App } from 'obsidian'
 import { discoverLocalAccounts, resolveAccountToken, type LocalAccount } from './desktop/ghAccounts';
 import { describeError } from './github/errors';
 import { fetchViewer, fetchWritableRepos, type Viewer } from './github/identity';
+import { readHead, readTree } from './github/trees';
 import type BasaltCausewayPlugin from './main';
-import { DEFAULT_EXCLUDE } from './sync/exclude';
+import { describeDetection, detectSubfolder } from './sync/detectSubfolder';
+import { compileExclude, defaultExclude, isForbiddenPath } from './sync/exclude';
 import { obsidianTransport } from './transport';
 import { AccountPicker } from './ui/accountPicker';
+import { HistoryModal } from './ui/historyModal';
 import { RepoPicker } from './ui/repoPicker';
 
+/**
+ * Built imperatively in `display()` rather than declared via `getSettingDefinitions()`.
+ *
+ * That API is `@since 1.13.0`, and this plugin's `minAppVersion` is 1.6.6 — adopting it would
+ * cut off every Obsidian below 1.13.0 for what is, on this tab, mostly a presentational win.
+ * The known cost of staying imperative is real but narrow: these settings do not appear in
+ * Obsidian's built-in settings *search* for users on 1.13.0 or later.
+ *
+ * When the floor does move to 1.13.0, the plain toggles and text fields convert almost
+ * mechanically. The parts that will not are the ones worth planning for: the token field
+ * revalidates against the GitHub API on change, the owner/repo fields are filled by two fuzzy
+ * picker modals rather than typed, and five paths call `this.display()` to re-render the tab
+ * after mutating state. Expect a hybrid, not a straight swap.
+ */
 export class BasaltCausewaySettingTab extends PluginSettingTab {
   /** Cached for the session so reopening settings does not re-hit the API. */
   private viewer: Viewer | null = null;
@@ -76,7 +93,11 @@ export class BasaltCausewaySettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('Subfolder')
-      .setDesc('Publish the vault under this path in the repo. Leave empty to map the vault root to the repo root.')
+      .setDesc(
+        'Where this vault lives inside the repo. Leave empty to map the vault root to the repo root. ' +
+          'Use Detect to read it from the repo — a wrong value is silent: pushes land beside your notes ' +
+          'instead of in them, and incoming edits arrive as a new folder rather than reaching the note.',
+      )
       .addText((text) =>
         text
           .setPlaceholder('(repo root)')
@@ -85,6 +106,12 @@ export class BasaltCausewaySettingTab extends PluginSettingTab {
             this.plugin.settings.subfolder = value.replace(/^\/+|\/+$/g, '');
             await this.plugin.persist();
           }),
+      )
+      .addButton((button) =>
+        button
+          .setButtonText('Detect')
+          .setTooltip('Find where this vault already lives in the repo')
+          .onClick(() => void this.detectSubfolder()),
       );
 
     new Setting(containerEl).setName('Authentication').setHeading();
@@ -105,7 +132,7 @@ export class BasaltCausewaySettingTab extends PluginSettingTab {
           });
       });
 
-    token.descEl.createEl('div', {
+    token.descEl.createDiv({
       cls: 'basalt-causeway-hint',
       text:
         'Already signed in with the GitHub CLI? `gh auth token` prints a token you can paste here. ' +
@@ -116,12 +143,12 @@ export class BasaltCausewaySettingTab extends PluginSettingTab {
     // data.json lives inside the vault this plugin publishes. The exclude filter and the
     // hard assertion in plan.ts keep it out of every commit, but the user still deserves to
     // know where their token sits and to scope it accordingly.
-    token.descEl.createEl('div', {
+    token.descEl.createDiv({
       cls: 'basalt-causeway-token-warning',
       text:
-        'Stored in plain text in .obsidian/plugins/basalt-causeway/data.json — inside this vault. ' +
-        'It is never published: .obsidian/** is excluded and the push path refuses any tree ' +
-        'containing it. Scope the token to this single repo and give it an expiry anyway.',
+        `Stored in plain text in ${this.app.vault.configDir}/plugins/basalt-causeway/data.json — inside this ` +
+        `vault. It is never published: ${this.app.vault.configDir}/** is excluded and the push path refuses ` +
+        'any tree containing it. Scope the token to this single repo and give it an expiry anyway.',
     });
 
     new Setting(containerEl).setName('Triggers').setHeading();
@@ -170,7 +197,7 @@ export class BasaltCausewaySettingTab extends PluginSettingTab {
       .setName('Exclude')
       .setDesc(
         'One glob per line. Adding a pattern also *unpublishes* files it now matches — they are ' +
-          'deleted from the repo on the next sync (not from its history). Removing .obsidian/** ' +
+          `deleted from the repo on the next sync (not from its history). Removing ${this.app.vault.configDir}/** ` +
           'has no effect: both directions reject those paths regardless of this list.',
       )
       .addTextArea((area) => {
@@ -185,7 +212,7 @@ export class BasaltCausewaySettingTab extends PluginSettingTab {
           .setIcon('rotate-ccw')
           .setTooltip('Restore defaults')
           .onClick(async () => {
-            this.plugin.settings.exclude = [...DEFAULT_EXCLUDE];
+            this.plugin.settings.exclude = defaultExclude(this.app.vault.configDir);
             await this.plugin.persist();
             this.display();
           }),
@@ -224,6 +251,18 @@ export class BasaltCausewaySettingTab extends PluginSettingTab {
     void this.refreshViewer();
 
     new Setting(containerEl)
+      .setName('Sync history')
+      .setDesc(
+        'What the last 50 syncs did — pushed, pulled, conflicts, and the reason for any failure. ' +
+          'A sync reports itself in a Notice that disappears; this is where it stays.',
+      )
+      .addButton((button) =>
+        button
+          .setButtonText('View')
+          .onClick(() => new HistoryModal(this.app, this.plugin.history).open()),
+      );
+
+    new Setting(containerEl)
       .setName('Reset sync baseline')
       .setDesc(
         'Forget what the two sides last agreed on. The next sync republishes everything and proposes no deletions. ' +
@@ -233,6 +272,10 @@ export class BasaltCausewaySettingTab extends PluginSettingTab {
       .addButton((button) =>
         button
           .setButtonText('Reset')
+          // Deprecated in favour of `setDestructive()`, which is `@since 1.13.0` — above this
+          // plugin's `minAppVersion` of 1.6.6, so adopting it would make the button throw for
+          // everyone below that rather than merely look different. `setWarning` is deprecated,
+          // not removed, and still renders. Revisit when the floor reaches 1.13.0.
           .setWarning()
           .onClick(async () => {
             await this.plugin.resetBaseline();
@@ -361,6 +404,73 @@ export class BasaltCausewaySettingTab extends PluginSettingTab {
    * Deliberately silent on failure: a bad token shows up as "not signed in" here and as a real,
    * actionable error the moment you sync. Opening settings is not the place to raise it.
    */
+  /**
+   * Read the repo and work out the subfolder, rather than making the user know it.
+   *
+   * Reads only — it never pushes, and it writes the setting only on a confident match. An
+   * ambiguous or empty result reports what it saw and changes nothing: silently moving a vault
+   * that was already configured correctly is worse than leaving the field alone.
+   */
+  private async detectSubfolder(): Promise<void> {
+    const { owner, repo, branch, token } = this.plugin.settings;
+    if (!owner || !repo || !branch || !token) {
+      new Notice('Basalt Causeway: set the repository, branch and token first.');
+      return;
+    }
+
+    const ctx = { transport: obsidianTransport, owner, repo, token };
+    try {
+      const head = await readHead(ctx, branch);
+      const tree = await readTree(ctx, head.treeSha);
+
+      // The same filter the push path applies, so detection scores the files that actually
+      // travel. Counting excluded ones would let `.obsidian` noise decide the answer.
+      const excluded = compileExclude(this.plugin.settings.exclude);
+      const configDir = this.app.vault.configDir;
+      const localPaths = this.app.vault
+        .getFiles()
+        .map((file) => file.path)
+        .filter((path) => !isForbiddenPath(path, configDir) && !excluded(path));
+
+      const detection = detectSubfolder(
+        localPaths,
+        tree.files.map((file) => file.path),
+      );
+
+      // A truncated tree can only *lose* matches, so a confident answer stays trustworthy —
+      // but a weak one may be weak only because the evidence was cut off. Say so.
+      if (tree.truncated && !detection.confident) {
+        new Notice(
+          'Basalt Causeway: the repo is too large to list in full, so the subfolder could not be ' +
+            'determined reliably. Set it by hand.',
+        );
+        return;
+      }
+
+      if (!detection.confident) {
+        new Notice(`Basalt Causeway: ${describeDetection(detection)}`);
+        return;
+      }
+
+      if (detection.subfolder === this.plugin.settings.subfolder) {
+        new Notice(`Basalt Causeway: subfolder is already correct. ${describeDetection(detection)}`);
+        return;
+      }
+
+      const previous = this.plugin.settings.subfolder || '(repo root)';
+      this.plugin.settings.subfolder = detection.subfolder;
+      await this.plugin.persist();
+      this.display();
+      new Notice(
+        `Basalt Causeway: subfolder changed from ${previous} to ` +
+          `${detection.subfolder || '(repo root)'}. ${describeDetection(detection)} ` +
+          'Reset the sync baseline so the next sync compares against the right paths.',
+      );
+    } catch (err) {
+      new Notice(`Basalt Causeway: could not read the repo — ${describeError(err)}`);
+    }
+  }
+
   private async refreshViewer(): Promise<void> {
     const { token } = this.plugin.settings;
     if (!token || this.viewer) return;

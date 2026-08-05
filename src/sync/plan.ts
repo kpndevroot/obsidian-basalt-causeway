@@ -5,7 +5,7 @@
  */
 
 import { compare } from './conflict';
-import { FORBIDDEN_PREFIXES, isForbiddenPath, normalizeSubfolder } from './exclude';
+import { forbiddenFolders, isForbiddenPath, normalizeSubfolder } from './exclude';
 
 export type LocalFile = {
   /** Repo-relative — the subfolder prefix is already applied by the caller. */
@@ -145,7 +145,7 @@ export function buildPushPlan(input: PlanInput): PushPlan {
  * The cost of that bug is publishing a GitHub token to GitHub, so it gets a second,
  * unconditional check that does not depend on the user's settings being right.
  */
-export function assertNoSecrets(paths: string[], subfolder: string): void {
+export function assertNoSecrets(paths: string[], subfolder: string, configDir: string): void {
   // Normalized through the same helper the engine uses. A hand-edited `data.json` holding
   // `subfolder: "vault/"` would otherwise build the prefix `vault//`, which matches nothing —
   // silently turning this last line of defence into a no-op.
@@ -154,9 +154,9 @@ export function assertNoSecrets(paths: string[], subfolder: string): void {
 
   for (const path of paths) {
     const vaultPath = path.startsWith(prefix) ? path.slice(prefix.length) : path;
-    if (isForbiddenPath(vaultPath)) {
+    if (isForbiddenPath(vaultPath, configDir)) {
       throw new Error(
-        `Refusing to push "${path}": paths under ${FORBIDDEN_PREFIXES.join(' or ')} are never ` +
+        `Refusing to push "${path}": paths containing ${forbiddenFolders(configDir).join(' or ')} are never ` +
           'published. This is a bug in the exclude filter — your token may be in that folder.',
       );
     }

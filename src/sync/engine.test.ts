@@ -4,7 +4,7 @@ import { ScopeError } from '../github/errors';
 import { FakeGitHub } from '../test/fakeGitHub';
 import { FakeVault } from '../test/fakeVault';
 import { clearNotices, notices } from '../test/obsidian';
-import { DEFAULT_SETTINGS, EMPTY_BASELINE, type Baseline, type BasaltCausewaySettings } from '../types';
+import { defaultSettings, EMPTY_BASELINE, type Baseline, type BasaltCausewaySettings } from '../types';
 import { bakeDataview } from './dataview';
 import { SyncEngine } from './engine';
 
@@ -16,7 +16,7 @@ function harness(
   const vault = new FakeVault(vaultFiles);
   const github = new FakeGitHub(repoFiles);
   const settings: BasaltCausewaySettings = {
-    ...DEFAULT_SETTINGS,
+    ...defaultSettings(vault.configDir),
     owner: 'kpndevroot',
     repo: 'my-vault',
     branch: 'main',
@@ -43,6 +43,7 @@ function harness(
 
   const engine = new SyncEngine({
     vault: vault.asVault(),
+    fileManager: vault.asFileManager(),
     transport: github.transport(),
     settings: () => settings,
     baseline: () => baseline,
@@ -284,6 +285,33 @@ describe('pull', () => {
     expect(h.vault.trashed).toEqual(['b.md']);
     expect(h.vault.hardDeleted).toEqual([]);
     expect(report.pulled.deleted).toBe(1);
+  });
+
+  // The counts alone cannot answer "what did it just change under me?", which is the question a
+  // user asks after an unattended sync — so the paths are reported too, tagged by what happened.
+  it('reports which vault paths a pull wrote and deleted', async () => {
+    const h = harness({ 'a.md': 'alpha', 'gone.md': 'doomed' });
+    await h.engine.sync();
+
+    h.github.commit({ 'from-phone.md': 'new', 'a.md': 'edited elsewhere', 'gone.md': null });
+    const report = await h.engine.sync();
+
+    expect([...report.pulled.paths].sort((x, y) => x.path.localeCompare(y.path))).toEqual([
+      { op: 'write', path: 'a.md' },
+      { op: 'write', path: 'from-phone.md' },
+      { op: 'delete', path: 'gone.md' },
+    ]);
+    // The paths and the counts must not be able to drift apart.
+    expect(report.pulled.written).toBe(2);
+    expect(report.pulled.deleted).toBe(1);
+  });
+
+  it('reports no paths when a sync pulled nothing', async () => {
+    const h = harness({ 'a.md': 'alpha' });
+    await h.engine.sync();
+    const report = await h.engine.sync();
+
+    expect(report.pulled.paths).toEqual([]);
   });
 
   it('does not re-push what it just pulled', async () => {

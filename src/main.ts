@@ -7,31 +7,43 @@
  * makes it unit-testable without a mock of the whole app.
  */
 
-import { Notice, Plugin } from 'obsidian';
+import { Menu, Notice, Plugin } from 'obsidian';
 
 import { createBaker } from './dataview/api';
 import { describeError } from './github/errors';
 import { BasaltCausewaySettingTab } from './settings';
 import { SyncEngine, type SyncStatus } from './sync/engine';
+import { appendHistory, trimChanges, type SyncChange, type SyncHistoryEntry } from './sync/history';
+import { normalizeSubfolder } from './sync/exclude';
 import { describePlan } from './sync/plan';
 import { obsidianTransport } from './transport';
-import { DEFAULT_SETTINGS, EMPTY_BASELINE, type Baseline, type BasaltCausewaySettings, type PersistedData } from './types';
+import { defaultSettings, EMPTY_BASELINE, type Baseline, type BasaltCausewaySettings, type PersistedData } from './types';
 import { BASALT_ICON_ID, registerBasaltIcon } from './ui/basaltIcon';
 import { ConflictModal } from './ui/conflictModal';
 import { DryRunModal } from './ui/dryRunModal';
+import { HistoryModal } from './ui/historyModal';
 import { StatusBar } from './ui/statusBar';
 
 /** How often the pull poller wakes to *consider* syncing; the setting decides whether it does. */
 const PULL_TICK_MS = 30_000;
 
 export default class BasaltCausewayPlugin extends Plugin {
-  settings: BasaltCausewaySettings = { ...DEFAULT_SETTINGS };
+  // Definitely assigned by `loadPersisted()`, which is the first statement in `onload` and runs
+  // before anything can read this. Not a field initialiser, because the defaults now derive from
+  // `Vault#configDir` and reaching for `this.app` mid-construction is a sharper edge than it looks.
+  settings!: BasaltCausewaySettings;
   baseline: Baseline = { ...EMPTY_BASELINE };
+  /** Newest first, capped. See `sync/history.ts` for why it is bounded. */
+  history: SyncHistoryEntry[] = [];
 
   private engine!: SyncEngine;
   private statusBar!: StatusBar;
   private status: SyncStatus = { phase: 'idle', pending: 0, conflicts: [], message: '' };
-  private settleTimer: ReturnType<typeof setTimeout> | null = null;
+  // `number`, not `ReturnType<typeof setTimeout>`: @types/node is in scope for the build scripts
+  // and makes that alias resolve to Node's `Timeout`, while `window.setTimeout` — the DOM one we
+  // actually call — hands back a numeric handle. Naming the browser type is what keeps the two
+  // from disagreeing.
+  private settleTimer: number | null = null;
   private lastPullCheck = 0;
 
   async onload(): Promise<void> {
@@ -43,6 +55,7 @@ export default class BasaltCausewayPlugin extends Plugin {
 
     this.engine = new SyncEngine({
       vault: this.app.vault,
+      fileManager: this.app.fileManager,
       transport: obsidianTransport,
       settings: () => this.settings,
       baseline: () => this.baseline,
@@ -57,13 +70,14 @@ export default class BasaltCausewayPlugin extends Plugin {
       bake: (content, path) => this.bakeWithDataview(content, path),
     });
 
-    this.statusBar = new StatusBar(this.addStatusBarItem(), () => {
-      new ConflictModal(this.app, this.status.conflicts, this.status.message, async (path) => {
-        await this.engine.keepLocalVersion(path);
-        this.status = { ...this.status, conflicts: this.status.conflicts.filter((p) => p !== path) };
-        this.renderStatus();
-        new Notice(`Basalt Causeway: keeping your version of ${path}. Sync to publish it.`);
-      }).open();
+    this.statusBar = new StatusBar(this.addStatusBarItem(), {
+      // Conflicts are the thing you must act on, so they win when present. With none — the
+      // ordinary case — the useful answer to "what is this thing doing?" is the history.
+      onClick: () => {
+        if (this.status.conflicts.length > 0) this.openConflicts();
+        else new HistoryModal(this.app, this.history).open();
+      },
+      onContextMenu: (event) => this.openStatusMenu(event),
     });
     this.renderStatus();
 
@@ -77,6 +91,12 @@ export default class BasaltCausewayPlugin extends Plugin {
       id: 'dry-run',
       name: 'Dry run',
       callback: () => void this.runSync(true),
+    });
+
+    this.addCommand({
+      id: 'sync-history',
+      name: 'Show sync history',
+      callback: () => new HistoryModal(this.app, this.history).open(),
     });
 
     this.addRibbonIcon(BASALT_ICON_ID, 'Basalt Causeway: sync now', () => void this.runSync(false));
@@ -115,7 +135,7 @@ export default class BasaltCausewayPlugin extends Plugin {
   }
 
   onunload(): void {
-    if (this.settleTimer !== null) clearTimeout(this.settleTimer);
+    if (this.settleTimer !== null) window.clearTimeout(this.settleTimer);
     this.settleTimer = null;
   }
 
@@ -152,12 +172,18 @@ export default class BasaltCausewayPlugin extends Plugin {
     const stored = (await this.loadData()) as Partial<PersistedData> | null;
     // `Object.assign` over the defaults, not the stored object alone: a settings field added
     // in a later version is absent from an old data.json and would otherwise arrive undefined.
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, stored?.settings);
+    this.settings = Object.assign({}, defaultSettings(this.app.vault.configDir), stored?.settings);
     this.baseline = Object.assign({}, EMPTY_BASELINE, stored?.baseline);
+    // Absent in every data.json written before history existed, so default rather than trust it.
+    this.history = Array.isArray(stored?.history) ? stored.history : [];
   }
 
   async persist(): Promise<void> {
-    await this.saveData({ settings: this.settings, baseline: this.baseline } satisfies PersistedData);
+    await this.saveData({
+      settings: this.settings,
+      baseline: this.baseline,
+      history: this.history,
+    } satisfies PersistedData);
     this.renderStatus();
   }
 
@@ -178,8 +204,8 @@ export default class BasaltCausewayPlugin extends Plugin {
    * zipball each time — the mobile cost of a desktop habit.
    */
   private onVaultChanged(): void {
-    if (this.settleTimer !== null) clearTimeout(this.settleTimer);
-    this.settleTimer = setTimeout(() => {
+    if (this.settleTimer !== null) window.clearTimeout(this.settleTimer);
+    this.settleTimer = window.setTimeout(() => {
       this.settleTimer = null;
       if (this.engine.isRunning) {
         // Re-arm rather than drop it. The settle timer was already cleared above, so returning
@@ -206,10 +232,41 @@ export default class BasaltCausewayPlugin extends Plugin {
     try {
       const report = await this.engine.sync({ dryRun });
 
+      // A dry run is a preview that changes nothing, so it is not history. Recording one would
+      // pad the log with entries that never touched either side.
       if (dryRun) {
         new DryRunModal(this.app, describePlan(report.plan)).open();
         return;
       }
+
+      // `plan.ops` is repo-relative; the pull side is already vault-relative. Un-prefixing here
+      // means the list reads in the paths the user recognises, in one spelling.
+      const sub = normalizeSubfolder(this.settings.subfolder);
+      const unprefix = (path: string) =>
+        sub && path.startsWith(`${sub}/`) ? path.slice(sub.length + 1) : path;
+
+      const changes: SyncChange[] = [
+        ...report.pulled.paths.map((p) => ({
+          direction: 'pull' as const,
+          op: p.op === 'write' ? ('modify' as const) : ('delete' as const),
+          path: p.path,
+        })),
+        ...report.plan.ops.map((op) => ({
+          direction: 'push' as const,
+          op: op.op,
+          path: unprefix(op.path),
+        })),
+      ];
+
+      await this.record({
+        at: Date.now(),
+        outcome: 'ok',
+        pushed: report.plan.counts,
+        pulled: { written: report.pulled.written, deleted: report.pulled.deleted },
+        commitSha: report.commitSha,
+        conflicts: report.conflicts.length,
+        ...trimChanges(changes),
+      });
 
       await this.refreshPending();
 
@@ -227,10 +284,87 @@ export default class BasaltCausewayPlugin extends Plugin {
       if (report.conflicts.length > 0) parts.push(`${report.conflicts.length} conflict(s)`);
       new Notice(`Basalt Causeway: ${parts.length > 0 ? parts.join(' · ') : 'already up to date'}.`);
     } catch (err) {
+      // Recorded even for a dry run: a dry run that *threw* says something real about the repo,
+      // unlike one that merely previewed nothing.
+      await this.record({
+        at: Date.now(),
+        outcome: 'error',
+        pushed: { added: 0, changed: 0, deleted: 0 },
+        pulled: { written: 0, deleted: 0 },
+        commitSha: null,
+        conflicts: this.status.conflicts.length,
+        error: describeError(err),
+      });
+
       // Auto-sync failures are still surfaced. A silent background failure is how a user
       // discovers weeks later that nothing has reached their phone.
       new Notice(`Basalt Causeway: ${describeError(err)}`);
     }
+  }
+
+  /**
+   * Append one run and persist. Never allowed to break a sync: a log that fails loudly would
+   * turn a successful sync into a reported failure, which is exactly backwards.
+   */
+  private async record(entry: SyncHistoryEntry): Promise<void> {
+    try {
+      this.history = appendHistory(this.history, entry);
+      await this.persist();
+    } catch {
+      // Keep the in-memory entry; the next successful persist writes it.
+    }
+  }
+
+  private openConflicts(): void {
+    new ConflictModal(this.app, this.status.conflicts, this.status.message, async (path) => {
+      await this.engine.keepLocalVersion(path);
+      this.status = { ...this.status, conflicts: this.status.conflicts.filter((p) => p !== path) };
+      this.renderStatus();
+      new Notice(`Basalt Causeway: keeping your version of ${path}. Sync to publish it.`);
+    }).open();
+  }
+
+  /**
+   * Everything the plugin can do, from the one control that is always on screen — so none of it
+   * requires knowing a command name or finding the settings tab.
+   */
+  private openStatusMenu(event: MouseEvent): void {
+    const menu = new Menu();
+
+    menu.addItem((item) =>
+      item
+        .setTitle('Sync now')
+        .setIcon('refresh-cw')
+        .onClick(() => void this.runSync(false)),
+    );
+    menu.addItem((item) =>
+      item
+        .setTitle('Dry run')
+        .setIcon('list')
+        .onClick(() => void this.runSync(true)),
+    );
+
+    menu.addSeparator();
+
+    menu.addItem((item) =>
+      item
+        .setTitle('Sync history')
+        .setIcon('history')
+        .onClick(() => new HistoryModal(this.app, this.history).open()),
+    );
+
+    // Listed only when it would show something. A permanently-present "0 conflicts" entry is
+    // noise in a menu this small.
+    if (this.status.conflicts.length > 0) {
+      menu.addItem((item) =>
+        item
+          .setTitle(`Resolve ${this.status.conflicts.length} conflict(s)`)
+          .setIcon('alert-triangle')
+          .onClick(() => this.openConflicts()),
+      );
+    }
+
+    menu.showAtMouseEvent(event);
   }
 
   // ---- status ---------------------------------------------------------------

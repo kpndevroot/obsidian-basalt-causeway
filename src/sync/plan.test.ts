@@ -123,22 +123,64 @@ describe('buildPushPlan', () => {
 
 describe('assertNoSecrets', () => {
   it('throws when a plugin config path reaches the tree builder', () => {
-    expect(() => assertNoSecrets(['.obsidian/plugins/basalt-causeway/data.json'], '')).toThrow(/never published/);
+    expect(() => assertNoSecrets(['.obsidian/plugins/basalt-causeway/data.json'], '', '.obsidian')).toThrow(/never published/);
   });
 
   it('sees through the subfolder prefix', () => {
-    expect(() => assertNoSecrets(['vault/.obsidian/app.json'], 'vault')).toThrow(/never published/);
+    expect(() => assertNoSecrets(['vault/.obsidian/app.json'], 'vault', '.obsidian')).toThrow(/never published/);
   });
 
   // The UI normalizes the subfolder, but a hand-edited data.json does not — and an un-normalized
   // "vault/" built the prefix "vault//", which matches nothing, silently turning the last line
   // of defence into a no-op.
   it('normalizes a subfolder with stray slashes before un-mapping', () => {
-    expect(() => assertNoSecrets(['vault/.obsidian/app.json'], 'vault/')).toThrow(/never published/);
-    expect(() => assertNoSecrets(['vault/.obsidian/app.json'], '/vault/')).toThrow(/never published/);
+    expect(() => assertNoSecrets(['vault/.obsidian/app.json'], 'vault/', '.obsidian')).toThrow(/never published/);
+    expect(() => assertNoSecrets(['vault/.obsidian/app.json'], '/vault/', '.obsidian')).toThrow(/never published/);
   });
 
   it('allows a note whose name merely starts with the same letters', () => {
-    expect(() => assertNoSecrets(['.obsidian-notes/tips.md', 'notes/a.md'], '')).not.toThrow();
+    expect(() => assertNoSecrets(['.obsidian-notes/tips.md', 'notes/a.md'], '', '.obsidian')).not.toThrow();
+  });
+
+  // The whole reason this takes `configDir` rather than assuming `.obsidian`. A vault opened
+  // with an overridden config folder keeps its token in `<configDir>/plugins/.../data.json`,
+  // and the old hardcoded prefix list did not match it — so the last line of defence let the
+  // token through on exactly the vaults that had moved it.
+  it('guards a renamed config folder, which is where the token actually lives', () => {
+    expect(() =>
+      assertNoSecrets(['.my-config/plugins/basalt-causeway/data.json'], '', '.my-config'),
+    ).toThrow(/never published/);
+  });
+
+  // The corollary: `.obsidian` is not magic once the user has moved it. Guarding it anyway
+  // would be a rule nobody asked for, quietly refusing to publish a real folder of notes.
+  it('does not guard .obsidian when that is not the config folder', () => {
+    expect(() => assertNoSecrets(['.obsidian/notes.md'], '', '.my-config')).not.toThrow();
+  });
+
+  // Regression, from a real leak. A vault can contain another vault, and the prefix form of this
+  // check (`startsWith('.obsidian/')`) only ever guarded the config folder at the vault *root* —
+  // so this exact path reached a public repo with a live token in it.
+  it('guards a config folder nested inside the vault, not just the one at the root', () => {
+    expect(() =>
+      assertNoSecrets(['kpndevroot/.obsidian/plugins/basalt-causeway/data.json'], '', '.obsidian'),
+    ).toThrow(/never published/);
+  });
+
+  it('guards a nested config folder however deep it sits', () => {
+    expect(() => assertNoSecrets(['a/b/c/.obsidian/app.json'], '', '.obsidian')).toThrow(
+      /never published/,
+    );
+    expect(() => assertNoSecrets(['team/notes/.git/config'], '', '.obsidian')).toThrow(
+      /never published/,
+    );
+  });
+
+  // The segment match must not degrade into a substring match: these are ordinary notes whose
+  // folder names merely contain the forbidden name.
+  it('allows folders whose names merely contain the forbidden one', () => {
+    expect(() =>
+      assertNoSecrets(['notes/.obsidian-backup/a.md', 'my.obsidian/b.md', 'x/github/c.md'], '', '.obsidian'),
+    ).not.toThrow();
   });
 });

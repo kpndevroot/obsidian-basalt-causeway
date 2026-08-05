@@ -31,7 +31,7 @@ export class AccountPicker extends FuzzySuggestModal<LocalAccount> {
   }
 
   renderSuggestion(match: FuzzyMatch<LocalAccount>, el: HTMLElement): void {
-    el.createEl('div', { text: match.item.login });
+    el.createDiv({ text: match.item.login });
     el.createEl('small', {
       cls: 'basalt-causeway-suggestion-detail',
       text: `${match.item.host} · signed in with the GitHub CLI`,

@@ -1,4 +1,5 @@
-import { DEFAULT_EXCLUDE } from './sync/exclude';
+import { defaultExclude } from './sync/exclude';
+import type { SyncHistoryEntry } from './sync/history';
 
 export type BasaltCausewaySettings = {
   owner: string;
@@ -31,19 +32,26 @@ export type BasaltCausewaySettings = {
   bakeDataview: boolean;
 };
 
-export const DEFAULT_SETTINGS: BasaltCausewaySettings = {
-  owner: '',
-  repo: '',
-  branch: 'main',
-  token: '',
-  autoSync: false,
-  settleMs: 5000,
-  pullIntervalMs: 0,
-  exclude: [...DEFAULT_EXCLUDE],
-  subfolder: '',
-  maxFileBytes: 25 * 1024 * 1024,
-  bakeDataview: true,
-};
+/**
+ * A function rather than a constant, because `exclude` seeds from `Vault#configDir` and that is
+ * only knowable at runtime — a module-level object would have to bake in `.obsidian` and be
+ * wrong for anyone who renamed it.
+ */
+export function defaultSettings(configDir: string): BasaltCausewaySettings {
+  return {
+    owner: '',
+    repo: '',
+    branch: 'main',
+    token: '',
+    autoSync: false,
+    settleMs: 5000,
+    pullIntervalMs: 0,
+    exclude: defaultExclude(configDir),
+    subfolder: '',
+    maxFileBytes: 25 * 1024 * 1024,
+    bakeDataview: true,
+  };
+}
 
 /**
  * What both sides agreed on at the last successful sync: the commit we synced to, and the
@@ -83,8 +91,13 @@ export type ConflictRecord = {
 
 export const EMPTY_BASELINE: Baseline = { commitSha: null, files: {}, conflicts: {} };
 
-/** The single `data.json` payload. Settings and baseline share one file, one write. */
+/** The single `data.json` payload. Settings, baseline and history share one file, one write. */
 export type PersistedData = {
   settings: BasaltCausewaySettings;
   baseline: Baseline;
+  /**
+   * Newest first, capped at `HISTORY_LIMIT`. Optional because every `data.json` written before
+   * this existed has no such key, and an old file must keep loading.
+   */
+  history?: SyncHistoryEntry[];
 };

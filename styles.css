@@ -29,6 +29,63 @@
   color: var(--text-muted);
 }
 
+.basalt-causeway-history {
+  max-height: 50vh;
+  overflow-y: auto;
+  list-style: none;
+  padding-left: 0;
+}
+
+.basalt-causeway-history li {
+  padding: 0.5em 0 0.5em 0.7em;
+  border-left: 2px solid var(--background-modifier-border);
+  margin-bottom: 0.3em;
+}
+
+/* Colour carries only the exceptional rows. A list where every entry is tinted is a list where
+   the eye has nothing to land on, and "nothing happened" is by far the commonest outcome. */
+.basalt-causeway-history-error {
+  border-left-color: var(--text-error);
+}
+
+.basalt-causeway-history-change {
+  border-left-color: var(--text-accent);
+}
+
+.basalt-causeway-history-when {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+
+.basalt-causeway-history-files summary {
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  margin-top: 0.2em;
+}
+
+.basalt-causeway-history-files ul {
+  list-style: none;
+  padding-left: 0.8em;
+  margin: 0.3em 0 0;
+}
+
+.basalt-causeway-history-files li {
+  border: none;
+  padding: 0.1em 0;
+  margin: 0;
+  font-family: var(--font-monospace);
+  font-size: var(--font-ui-smaller);
+  /* Long note paths are the norm; wrapping beats a horizontal scrollbar inside a modal. */
+  word-break: break-word;
+}
+
+.basalt-causeway-history-commit {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  font-family: var(--font-monospace);
+}
+
 .basalt-causeway-dry-run {
   max-height: 50vh;
   overflow: auto;
