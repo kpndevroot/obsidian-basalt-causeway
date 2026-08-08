@@ -1,6 +1,6 @@
 {
   "name": "obsidian-basalt-causeway",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Publish an Obsidian vault to a GitHub repo so Basalt can read it on mobile.",
   "main": "main.js",
   "private": true,
