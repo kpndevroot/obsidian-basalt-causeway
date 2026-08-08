@@ -11,6 +11,8 @@ import { Menu, Notice, Plugin } from 'obsidian';
 
 import { createBaker } from './dataview/api';
 import { describeError } from './github/errors';
+import { habitCalendarProcessor } from './habit/calendar';
+import { habitCalendarExtension } from './habit/liveCalendar';
 import { BasaltCausewaySettingTab } from './settings';
 import { SyncEngine, type SyncStatus } from './sync/engine';
 import { appendHistory, trimChanges, type SyncChange, type SyncHistoryEntry } from './sync/history';
@@ -102,6 +104,15 @@ export default class BasaltCausewayPlugin extends Plugin {
     this.addRibbonIcon(BASALT_ICON_ID, 'Basalt Causeway: sync now', () => void this.runSync(false));
 
     this.addSettingTab(new BasaltCausewaySettingTab(this.app, this));
+
+    // Two hosts for one feature: reading view renders through a post-processor, Live Preview
+    // through a CodeMirror decoration. Both read the setting through a thunk rather than by value,
+    // so turning it off takes effect without a restart — `workspace.updateOptions()` in the
+    // settings tab is what nudges the editor half to re-evaluate.
+    this.registerMarkdownPostProcessor(
+      habitCalendarProcessor(this.app, () => this.settings.habitCalendar),
+    );
+    this.registerEditorExtension(habitCalendarExtension(() => this.settings.habitCalendar));
 
     // `registerEvent` / `registerInterval` rather than hand-rolled cleanup: Obsidian releases
     // both on unload automatically, and the docs are explicit that a listener surviving a

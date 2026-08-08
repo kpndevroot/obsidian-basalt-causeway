@@ -30,6 +30,14 @@ export type BasaltCausewaySettings = {
    * that such notes become publish-only; see the pull guard in `engine.ts`.
    */
   bakeDataview: boolean;
+  /**
+   * Draw a generated habit tracker as a calendar in reading view.
+   *
+   * On by default so a tracker looks the same here as it does in Basalt. Off is for anyone who
+   * would rather see the checklist the file actually contains — the recognition rule is strict,
+   * but it is still a rule applied to notes the user did not opt into one at a time.
+   */
+  habitCalendar: boolean;
 };
 
 /**
@@ -50,6 +58,7 @@ export function defaultSettings(configDir: string): BasaltCausewaySettings {
     subfolder: '',
     maxFileBytes: 25 * 1024 * 1024,
     bakeDataview: true,
+    habitCalendar: true,
   };
 }
 

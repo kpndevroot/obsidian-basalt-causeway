@@ -136,6 +136,35 @@ Three consequences worth knowing:
 Turn it off in settings to publish queries verbatim, at which point those notes sync in both
 directions like any other.
 
+## Habit trackers
+
+A habit tracker created in Basalt is a plain checklist with one dated line per day of the year:
+
+```markdown
+## January 2026
+
+- [ ] 2026-01-01 · Thu
+- [x] 2026-01-02 · Fri
+```
+
+That is the right shape for the *file* — it renders anywhere, GitHub diffs it one day at a time,
+and ticking a day is one character. It is the wrong shape for a *reader*: a habit is a thing you
+want to see the shape of, and thirty rows do not show it. So in **reading view and Live Preview**
+the plugin draws a whole month as a calendar you can tick, matching what Basalt shows on the phone.
+
+- **Nothing about the file changes.** The grid exists only on screen; a tap flips the same single
+  character it always did. Turn the setting off and the checklist is right there.
+- **The rule is strict**, and identical to Basalt's: every item must be a dated task, all in one
+  month, at least 28 of them. A to-do list that happens to start with a date stays a to-do list.
+- **A tap that no longer matches is refused.** The write checks that the line still carries the
+  date its cell was drawn as, so a note edited or pulled since the render can never have the wrong
+  day ticked — you get a notice instead.
+- **In Live Preview the grid dissolves when your cursor enters it**, so the days are always
+  editable as text. Move the cursor out and it redraws. Source mode always shows the checklist,
+  which is what you asked for by being there.
+- **Undo is per-day.** The editor write is a one-character transaction, so Cmd+Z unticks one day
+  rather than rewriting the block.
+
 ## Triggers
 
 | | |

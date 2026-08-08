@@ -86,6 +86,78 @@
   font-family: var(--font-monospace);
 }
 
+/* A habit tracker, drawn as a month. See src/habit/calendar.ts.
+   Every colour is an Obsidian variable, so the grid follows whatever theme is installed rather
+   than shipping one of its own. */
+.basalt-habit {
+  margin: 0.6em 0 1.2em;
+}
+
+.basalt-habit-head {
+  display: flex;
+  justify-content: flex-end;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  margin-bottom: 0.4em;
+}
+
+.basalt-habit-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 4px;
+}
+
+.basalt-habit-weekday {
+  text-align: center;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+
+/* The leading blanks of the month, as an offset rather than as empty cells. Set inline by the
+   renderer because it is the one value that depends on which month this is. */
+.basalt-habit-first {
+  grid-column-start: var(--basalt-habit-offset, 1);
+}
+
+.basalt-habit-day {
+  /* A square that follows the column width, so the grid fits any pane without measuring one. */
+  aspect-ratio: 1;
+  height: auto;
+  min-width: 0;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  background-color: var(--background-secondary);
+  color: var(--text-normal);
+  font-size: var(--font-ui-small);
+  box-shadow: none;
+  cursor: pointer;
+}
+
+.basalt-habit-day.is-checked {
+  background-color: var(--interactive-accent);
+  border-color: var(--interactive-accent);
+  color: var(--text-on-accent);
+  font-weight: var(--font-bold);
+}
+
+/* Today is outlined, never filled — a fill is what "kept" means, and the two must stay separable
+   on a day you have not ticked yet. */
+.basalt-habit-day.is-today {
+  border-width: 2px;
+  border-color: var(--interactive-accent);
+  font-weight: var(--font-bold);
+}
+
+/* A day whose source line could not be placed. Shown, because the file says it exists. */
+.basalt-habit-day:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
 .basalt-causeway-dry-run {
   max-height: 50vh;
   overflow: auto;

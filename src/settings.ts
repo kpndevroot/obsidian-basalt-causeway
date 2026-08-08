@@ -233,6 +233,24 @@ export class BasaltCausewaySettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
+      .setName('Show habit trackers as calendars')
+      .setDesc(
+        'A tracker created in Basalt is a checklist with one dated line per day. In reading view, ' +
+          'draw a whole month of them as a calendar you can tick — the same view Basalt shows on the ' +
+          'phone. The file is unchanged either way, and a list that is not a full month is left alone.',
+      )
+      .addToggle((toggle) =>
+        toggle.setValue(this.plugin.settings.habitCalendar).onChange(async (value) => {
+          this.plugin.settings.habitCalendar = value;
+          await this.plugin.persist();
+          // The reading-view half re-reads the setting on its next render for free. The editor half
+          // is a CodeMirror field that only rebuilds on a document or selection change, so without
+          // this the grid would linger in Live Preview until the next keystroke.
+          this.app.workspace.updateOptions();
+        }),
+      );
+
+    new Setting(containerEl)
       .setName('Maximum file size')
       .setDesc('Megabytes. Larger files are skipped with a notice; GitHub would reject them anyway.')
       .addText((text) =>
