@@ -13,6 +13,7 @@ import { createBaker } from './dataview/api';
 import { describeError } from './github/errors';
 import { habitCalendarProcessor } from './habit/calendar';
 import { habitCalendarExtension } from './habit/liveCalendar';
+import { isPaused, retryAfter } from './sync/backoff';
 import { BasaltCausewaySettingTab } from './settings';
 import { SyncEngine, type SyncStatus } from './sync/engine';
 import { appendHistory, trimChanges, type SyncChange, type SyncHistoryEntry } from './sync/history';
@@ -47,6 +48,11 @@ export default class BasaltCausewayPlugin extends Plugin {
   // from disagreeing.
   private settleTimer: number | null = null;
   private lastPullCheck = 0;
+  /**
+   * Epoch ms before which *automatic* syncing stays out of the way — see `sync/backoff.ts`.
+   * A manual sync ignores it: the user asking is new information, and they get the real error.
+   */
+  private pausedUntil = 0;
 
   async onload(): Promise<void> {
     // Before anything references the id — a ribbon icon pointing at an unregistered id renders
@@ -137,6 +143,7 @@ export default class BasaltCausewayPlugin extends Plugin {
         window.setInterval(() => {
           const period = this.settings.pullIntervalMs;
           if (period <= 0 || this.engine.isRunning) return;
+          if (isPaused(this.pausedUntil, Date.now())) return;
           if (Date.now() - this.lastPullCheck < period) return;
           this.lastPullCheck = Date.now();
           void this.runSync(false, { quiet: true });
@@ -226,7 +233,9 @@ export default class BasaltCausewayPlugin extends Plugin {
         return;
       }
       void this.refreshPending();
-      if (this.settings.autoSync) void this.runSync(false, { quiet: true });
+      if (this.settings.autoSync && !isPaused(this.pausedUntil, Date.now())) {
+        void this.runSync(false, { quiet: true });
+      }
     }, Math.max(1000, this.settings.settleMs));
   }
 
@@ -242,6 +251,10 @@ export default class BasaltCausewayPlugin extends Plugin {
   private async runSync(dryRun: boolean, options: { quiet?: boolean } = {}): Promise<void> {
     try {
       const report = await this.engine.sync({ dryRun });
+
+      // A run that got through clears any pause, whatever set it. The budget refilled, or the
+      // network came back — either way the reason to be waiting is gone.
+      this.pausedUntil = 0;
 
       // A dry run is a preview that changes nothing, so it is not history. Recording one would
       // pad the log with entries that never touched either side.
@@ -295,6 +308,13 @@ export default class BasaltCausewayPlugin extends Plugin {
       if (report.conflicts.length > 0) parts.push(`${report.conflicts.length} conflict(s)`);
       new Notice(`Basalt Causeway: ${parts.length > 0 ? parts.join(' · ') : 'already up to date'}.`);
     } catch (err) {
+      // Park automatic syncing when — and only when — the failure is about *timing*. A rate limit
+      // carries the moment it lifts; being offline resolves on its own. Everything else (a revoked
+      // token, a protected branch) is left on its normal schedule, because pausing on a failure
+      // the user must act on would turn a visible problem into a plugin that silently stopped.
+      const until = retryAfter(err, Date.now());
+      if (until !== null) this.pausedUntil = until;
+
       // Recorded even for a dry run: a dry run that *threw* says something real about the repo,
       // unlike one that merely previewed nothing.
       await this.record({
