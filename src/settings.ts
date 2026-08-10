@@ -5,6 +5,8 @@ import {
   Setting,
   type App,
   type SettingDefinitionItem,
+  type TextAreaComponent,
+  type TextComponent,
 } from 'obsidian';
 
 import { discoverLocalAccounts, resolveAccountToken, type LocalAccount } from './desktop/ghAccounts';
@@ -88,15 +90,16 @@ const copy = {
 /**
  * The keys `getControlValue` / `setControlValue` speak.
  *
- * Mostly the settings' own names, plus three that are deliberately *not*: the tab shows seconds,
- * minutes and megabytes where the settings hold milliseconds and bytes. The declarative API binds a
- * control to one key and one value, so the conversion has to live at the boundary — which is where
- * it always lived, previously spelled out inline in each `onChange`.
+ * Only the fields **nothing but the user** ever changes. The repository fields are deliberately not
+ * here: the repo picker writes all three at once, and a framework-rendered control has no way to
+ * learn that without `SettingTab#update()` — which is `@since 1.13.0`, above this plugin's floor of
+ * 1.6.6. Owning their DOM instead (`fillText`) is what lets one in-place refresh serve both paths.
+ *
+ * Three of these are deliberately not setting names: the tab shows seconds, minutes and megabytes
+ * where the settings hold milliseconds and bytes. A control binds one key to one value, so the
+ * conversion lives at the boundary — where it always lived, previously inline in each `onChange`.
  */
 type ControlKey =
-  | 'owner'
-  | 'repo'
-  | 'branch'
   | 'autoSync'
   | 'bakeDataview'
   | 'habitCalendar'
@@ -124,6 +127,20 @@ export class BasaltCausewaySettingTab extends PluginSettingTab {
    * is open.
    */
   private localAccounts: LocalAccount[] | null = null;
+
+  /**
+   * The rows something other than the user can change, held so `syncRows` can update them in place.
+   *
+   * Nulled in `hide()` along with everything else — a component whose row has been torn down is a
+   * detached DOM node, and writing into one is a silent no-op that looks like a bug elsewhere.
+   */
+  private ownerText: TextComponent | null = null;
+  private repoText: TextComponent | null = null;
+  private branchText: TextComponent | null = null;
+  private subfolderText: TextComponent | null = null;
+  private excludeArea: TextAreaComponent | null = null;
+  private connectRow: Setting | null = null;
+  private localAccountsRow: Setting | null = null;
 
   constructor(
     app: App,
@@ -179,17 +196,17 @@ export class BasaltCausewaySettingTab extends PluginSettingTab {
           {
             name: 'Owner',
             desc: copy.owner,
-            control: { type: 'text', key: 'owner', placeholder: 'kpndevroot' },
+            render: (setting) => this.fillText(setting, 'owner', 'kpndevroot'),
           },
           {
             name: 'Repository',
             desc: copy.repo,
-            control: { type: 'text', key: 'repo', placeholder: 'my-vault' },
+            render: (setting) => this.fillText(setting, 'repo', 'my-vault'),
           },
           {
             name: 'Branch',
             desc: copy.branch,
-            control: { type: 'text', key: 'branch', placeholder: 'main' },
+            render: (setting) => this.fillText(setting, 'branch', 'main'),
           },
           {
             name: 'Subfolder',
@@ -322,11 +339,6 @@ export class BasaltCausewaySettingTab extends PluginSettingTab {
     const control = key as ControlKey;
 
     switch (control) {
-      case 'owner':
-      case 'repo':
-      case 'branch':
-        settings[control] = String(value).trim();
-        break;
       case 'autoSync':
       case 'bakeDataview':
       case 'habitCalendar':
@@ -375,35 +387,13 @@ export class BasaltCausewaySettingTab extends PluginSettingTab {
 
     new Setting(containerEl).setName('Repository').setHeading();
 
-    new Setting(containerEl)
-      .setName('Owner')
-      .setDesc(copy.owner)
-      .addText((text) =>
-        text
-          .setPlaceholder('kpndevroot')
-          .setValue(this.plugin.settings.owner)
-          .onChange((value) => void this.setControlValue('owner', value)),
-      );
-
-    new Setting(containerEl)
-      .setName('Repository')
-      .setDesc(copy.repo)
-      .addText((text) =>
-        text
-          .setPlaceholder('my-vault')
-          .setValue(this.plugin.settings.repo)
-          .onChange((value) => void this.setControlValue('repo', value)),
-      );
-
-    new Setting(containerEl)
-      .setName('Branch')
-      .setDesc(copy.branch)
-      .addText((text) =>
-        text
-          .setPlaceholder('main')
-          .setValue(this.plugin.settings.branch)
-          .onChange((value) => void this.setControlValue('branch', value)),
-      );
+    this.fillText(new Setting(containerEl).setName('Owner').setDesc(copy.owner), 'owner', 'kpndevroot');
+    this.fillText(
+      new Setting(containerEl).setName('Repository').setDesc(copy.repo),
+      'repo',
+      'my-vault',
+    );
+    this.fillText(new Setting(containerEl).setName('Branch').setDesc(copy.branch), 'branch', 'main');
 
     this.fillSubfolder(new Setting(containerEl).setName('Subfolder').setDesc(copy.subfolder));
 
@@ -496,15 +486,54 @@ export class BasaltCausewaySettingTab extends PluginSettingTab {
   // ---- rows both paths share --------------------------------------------------
 
   /**
-   * Re-render whichever path is live.
+   * Push the current settings back into the rows already on screen.
    *
-   * `display()` rebuilds the tab imperatively; `update()` re-reads the definitions and does the
-   * same declaratively. Calling both is safe — on 1.13.0+ `display()` is never invoked, and below
-   * it `update()` does not exist to be called, which is why it is reached defensively.
+   * The obvious implementation is "ask the framework to re-render" — `SettingTab#update()` on the
+   * declarative path, `display()` on the imperative one. `update()` is `@since 1.13.0` and this
+   * plugin's floor is 1.6.6, and a runtime-guarded call is still a call: Obsidian's plugin review
+   * rejects the reference outright, whatever guard sits in front of it.
+   *
+   * So nothing re-renders. Both paths build every row through the same `fill*` helpers, so those
+   * helpers keep their components here and one in-place refresh serves both — which is also the
+   * better behaviour: a field updates without the tab flickering or losing scroll position.
+   *
+   * Only the rows something *other than the user* can change are held. Toggles and number fields
+   * are absent on purpose: nothing but a click moves them, so there is nothing to push back.
    */
-  private rerender(): void {
-    if (typeof this.update === 'function') this.update();
-    else this.display();
+  private syncRows(): void {
+    const { settings } = this.plugin;
+
+    this.ownerText?.setValue(settings.owner);
+    this.repoText?.setValue(settings.repo);
+    this.branchText?.setValue(settings.branch);
+    this.subfolderText?.setValue(settings.subfolder);
+    this.excludeArea?.setValue(settings.exclude.join('\n'));
+    this.connectRow?.setDesc(this.connectDesc());
+
+    // Adopting an account is the one act that makes this row obsolete while the tab is open.
+    if (settings.token) this.localAccountsRow?.settingEl.remove();
+  }
+
+  /**
+   * One repository field, owned by this tab rather than by the framework.
+   *
+   * `render` rather than a declarative `control` for exactly one reason: the repo picker sets all
+   * three of these at once, and a control the framework rendered cannot be told so without the
+   * 1.13-only re-render. Holding the component is what makes `syncRows` possible.
+   */
+  private fillText(setting: Setting, key: 'owner' | 'repo' | 'branch', placeholder: string): void {
+    setting.addText((text) => {
+      text
+        .setPlaceholder(placeholder)
+        .setValue(this.plugin.settings[key])
+        .onChange(async (value) => {
+          this.plugin.settings[key] = value.trim();
+          await this.plugin.persist();
+        });
+      if (key === 'owner') this.ownerText = text;
+      else if (key === 'repo') this.repoText = text;
+      else this.branchText = text;
+    });
   }
 
   private connectDesc(): string {
@@ -518,6 +547,7 @@ export class BasaltCausewaySettingTab extends PluginSettingTab {
 
   /** The one button that fills in all three repository fields from GitHub, not from memory. */
   private fillConnect(setting: Setting): void {
+    this.connectRow = setting;
     void this.refreshViewer();
     if (!this.plugin.settings.token) return;
 
@@ -538,15 +568,16 @@ export class BasaltCausewaySettingTab extends PluginSettingTab {
 
   private fillSubfolder(setting: Setting): void {
     setting
-      .addText((text) =>
+      .addText((text) => {
+        this.subfolderText = text;
         text
           .setPlaceholder('(repo root)')
           .setValue(this.plugin.settings.subfolder)
           .onChange(async (value) => {
             this.plugin.settings.subfolder = value.replace(/^\/+|\/+$/g, '');
             await this.plugin.persist();
-          }),
-      )
+          });
+      })
       .addButton((button) =>
         button
           .setButtonText('Detect')
@@ -587,6 +618,7 @@ export class BasaltCausewaySettingTab extends PluginSettingTab {
   private fillExclude(setting: Setting): void {
     setting
       .addTextArea((area) => {
+        this.excludeArea = area;
         area.inputEl.rows = 7;
         area.setValue(this.plugin.settings.exclude.join('\n')).onChange(async (value) => {
           this.plugin.settings.exclude = value.split('\n').map((line) => line.trim());
@@ -600,7 +632,7 @@ export class BasaltCausewaySettingTab extends PluginSettingTab {
           .onClick(async () => {
             this.plugin.settings.exclude = defaultExclude(this.app.vault.configDir);
             await this.plugin.persist();
-            this.rerender();
+            this.syncRows();
           }),
       );
   }
@@ -625,7 +657,7 @@ export class BasaltCausewaySettingTab extends PluginSettingTab {
         .setWarning()
         .onClick(async () => {
           await this.plugin.resetBaseline();
-          this.rerender();
+          this.syncRows();
         }),
     );
   }
@@ -646,6 +678,7 @@ export class BasaltCausewaySettingTab extends PluginSettingTab {
   }
 
   private fillLocalAccounts(setting: Setting): void {
+    this.localAccountsRow = setting;
     const accounts = this.readLocalAccounts();
     // Absent entirely when there are none — on a machine that has never run `gh` — rather than
     // shown as a disabled control explaining what the user is missing.
@@ -675,7 +708,7 @@ export class BasaltCausewaySettingTab extends PluginSettingTab {
           void this.plugin.persist().then(async () => {
             // Straight on to the repository picker: adopting an account and then hunting for
             // the next button is the friction this feature exists to remove.
-            this.rerender();
+            this.syncRows();
             await this.openRepoPicker();
           });
         }).open();
@@ -704,7 +737,7 @@ export class BasaltCausewaySettingTab extends PluginSettingTab {
         settings.owner = repo.owner;
         settings.repo = repo.name;
         settings.branch = repo.defaultBranch;
-        void this.plugin.persist().then(() => this.rerender());
+        void this.plugin.persist().then(() => this.syncRows());
       }).open();
     } catch (err) {
       new Notice(`Basalt Causeway: ${describeError(err)}`);
@@ -767,7 +800,7 @@ export class BasaltCausewaySettingTab extends PluginSettingTab {
       const previous = this.plugin.settings.subfolder || '(repo root)';
       this.plugin.settings.subfolder = detection.subfolder;
       await this.plugin.persist();
-      this.rerender();
+      this.syncRows();
       new Notice(
         `Basalt Causeway: subfolder changed from ${previous} to ` +
           `${detection.subfolder || '(repo root)'}. ${describeDetection(detection)} ` +
@@ -790,7 +823,7 @@ export class BasaltCausewaySettingTab extends PluginSettingTab {
 
     try {
       this.viewer = await fetchViewer({ transport: obsidianTransport, token });
-      this.rerender();
+      this.syncRows();
     } catch {
       // Leave `viewer` null; the description stays neutral. Remembered so this is not retried on
       // every render — a new token clears the flag and asks again.
@@ -810,5 +843,12 @@ export class BasaltCausewaySettingTab extends PluginSettingTab {
     this.viewer = null;
     this.viewerFailed = false;
     this.localAccounts = null;
+    this.ownerText = null;
+    this.repoText = null;
+    this.branchText = null;
+    this.subfolderText = null;
+    this.excludeArea = null;
+    this.connectRow = null;
+    this.localAccountsRow = null;
   }
 }
