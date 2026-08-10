@@ -97,9 +97,22 @@ export class FakeVault {
     return this.folders.has(path) ? { path } : null;
   }
 
+  /**
+   * Rejects a folder that already exists, as the real `Vault#createFolder` does.
+   *
+   * A permissive fake made the engine's create path untestable: a pull applies several files at
+   * once and they routinely share a parent, so "check, then create" loses that race in the field
+   * and never once in the suite. Throwing here is what makes `ensureFolder`'s recovery real.
+   */
   async createFolder(path: string): Promise<{ path: string }> {
+    if (this.folders.has(path)) throw new Error(`Folder already exists: ${path}`);
     this.folders.add(path);
     return { path };
+  }
+
+  /** Every folder created so far, for asserting that ancestors were made too. */
+  folderPaths(): string[] {
+    return [...this.folders].sort();
   }
 
   async cachedRead(file: TFile): Promise<string> {

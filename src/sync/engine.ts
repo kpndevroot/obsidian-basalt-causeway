@@ -26,7 +26,7 @@ import { pushMessage } from './commitMessages';
 import { compare, conflictSidecarPath } from './conflict';
 import { containsDataview } from './dataview';
 import { compileExclude, isForbiddenPath, normalizeSubfolder } from './exclude';
-import { assertNoSecrets, buildPushPlan, type LocalFile, type PushPlan } from './plan';
+import { assertNoSecrets, buildPushPlan, type LocalFile, type PushPlan, type SkippedFile } from './plan';
 
 /**
  * Extensions read and written as UTF-8 text; everything else round-trips as bytes.
@@ -47,6 +47,43 @@ function isTextPath(path: string): boolean {
   const dot = path.lastIndexOf('.');
   if (dot <= path.lastIndexOf('/')) return false;
   return TEXT_EXTENSIONS.has(path.slice(dot + 1).toLowerCase());
+}
+
+/**
+ * How many files are read, hashed or fetched at once.
+ *
+ * Bounded rather than unbounded: `Promise.all` over a 5,000-file vault opens 5,000 concurrent
+ * reads and, on the pull side, would hold every changed blob in memory at the same time. A small
+ * window gets nearly all of the wall-clock win with a flat memory profile.
+ */
+const CONCURRENCY = 8;
+
+/** Bounded-concurrency `map`, preserving input order. */
+async function mapLimit<T, R>(
+  items: readonly T[],
+  limit: number,
+  fn: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const out = new Array<R>(items.length);
+  let next = 0;
+
+  const worker = async (): Promise<void> => {
+    for (;;) {
+      const index = next++;
+      if (index >= items.length) return;
+      out[index] = await fn(items[index]!, index);
+    }
+  };
+
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return out;
+}
+
+/** Fixed-size slices, so a pull decides and applies one window at a time. */
+function chunk<T>(items: readonly T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let at = 0; at < items.length; at += size) out.push(items.slice(at, at + size));
+  return out;
 }
 
 export type SyncPhase = 'idle' | 'syncing' | 'error';
@@ -184,17 +221,22 @@ export class SyncEngine {
   }
 
   /**
-   * The sha of what this file *publishes as* — not of what is on disk. Every comparison in the
-   * engine is against a remote blob, so the published bytes are the only ones that can be
-   * compared to one.
+   * What this file publishes as: its sha, and whether it can be published at all.
+   *
+   * **One** call into `publishedFor`, which matters more than it looks: that call is a full
+   * Dataview render. Enumeration used to ask for the published form and then ask `hash()` for the
+   * sha, which asked again — every query note in the vault rendered twice, on every settle tick,
+   * because `pendingCount()` enumerates too. Answering both questions from one render halves that.
    */
-  private async hash(file: TFile): Promise<string> {
+  private async describe(file: TFile): Promise<{ sha: string; baked: boolean; blocked: boolean }> {
+    const cached = this.hashCache.get(file.path);
+    const fresh = cached && cached.mtime === file.stat.mtime && cached.size === file.stat.size;
+
     if (!isTextPath(file.path)) {
-      const cached = this.hashCache.get(file.path);
-      if (cached && cached.mtime === file.stat.mtime && cached.size === file.stat.size) return cached.sha;
+      if (fresh) return { sha: cached.sha, baked: false, blocked: false };
       const sha = gitBlobSha(new Uint8Array(await this.deps.vault.readBinary(file)));
       this.hashCache.set(file.path, { mtime: file.stat.mtime, size: file.stat.size, sha });
-      return sha;
+      return { sha, baked: false, blocked: false };
     }
 
     const raw = await this.deps.vault.cachedRead(file);
@@ -211,14 +253,22 @@ export class SyncEngine {
       // the *whole vault*, not on this file. Adding a note elsewhere changes what `TABLE ... FROM
       // #tag` returns while this file's mtime and size never move — so an mtime-keyed cache would
       // pin the query result at whatever it was the first time and never publish again.
-      return gitBlobSha(published.text);
+      return { sha: gitBlobSha(published.text), baked: true, blocked: false };
     }
 
-    const cached = this.hashCache.get(file.path);
-    if (cached && cached.mtime === file.stat.mtime && cached.size === file.stat.size) return cached.sha;
+    if (fresh) return { sha: cached.sha, baked: false, blocked: published.blocked };
     const sha = gitBlobSha(raw);
     this.hashCache.set(file.path, { mtime: file.stat.mtime, size: file.stat.size, sha });
-    return sha;
+    return { sha, baked: false, blocked: published.blocked };
+  }
+
+  /**
+   * The sha of what this file *publishes as* — not of what is on disk. Every comparison in the
+   * engine is against a remote blob, so the published bytes are the only ones that can be
+   * compared to one.
+   */
+  private async hash(file: TFile): Promise<string> {
+    return (await this.describe(file)).sha;
   }
 
   /**
@@ -229,17 +279,23 @@ export class SyncEngine {
     const excluded = compileExclude(this.deps.settings().exclude);
     const files = this.deps.vault.getFiles().filter((file) => !excluded(file.path));
 
-    const out: LocalFile[] = [];
-    for (const file of files) {
-      const published = isTextPath(file.path) ? await this.publishedFor(file) : null;
-      out.push({
+    const out = await mapLimit(files, CONCURRENCY, async (file) => {
+      const described = await this.describe(file);
+      return {
         path: this.toRepoPath(file.path),
-        sha: await this.hash(file),
+        sha: described.sha,
         size: file.stat.size,
         binary: !isTextPath(file.path),
-        renderable: !published?.blocked,
-      });
-    }
+        renderable: !described.blocked,
+      } satisfies LocalFile;
+    });
+
+    // Evict what is no longer in the vault. The cache is keyed by vault path and only the pull
+    // path ever deleted from it, so a file deleted or renamed locally left its entry behind for
+    // the life of the session — harmless per entry, unbounded across a long one.
+    const live = new Set(files.map((file) => file.path));
+    for (const path of this.hashCache.keys()) if (!live.has(path)) this.hashCache.delete(path);
+
     return out;
   }
 
@@ -450,9 +506,26 @@ export class SyncEngine {
       incoming.push({ repoPath: file.path, sha: file.sha });
     }
 
-    for (const { repoPath, sha: remoteSha } of incoming) {
+    /**
+     * What one incoming path resolves to, decided before anything is written.
+     *
+     * The decision half is all reads — the local hash, and the remote blob for a write — and those
+     * are what a pull spends its time on, so they run `CONCURRENCY` at a time. The *apply* half
+     * stays strictly sequential and in document order: it mutates the baseline and the counters,
+     * and a deterministic order is what keeps the reported `paths` list stable. Decisions are
+     * taken against the pre-pull vault, which is already true of the sequential version — every
+     * path in `incoming` is distinct, so no decision can be invalidated by another's write.
+     */
+    type Applied =
+      | { kind: 'skip' }
+      | { kind: 'baked' }
+      | { kind: 'mine'; repoPath: string; remoteSha: string | null }
+      | { kind: 'write'; repoPath: string; vaultPath: string; remoteSha: string; base64: string }
+      | { kind: 'delete'; repoPath: string; vaultPath: string; local: TFile | null };
+
+    const decide = async ({ repoPath, sha: remoteSha }: Incoming): Promise<Applied> => {
       const vaultPath = this.toVaultPath(repoPath);
-      if (vaultPath === null) continue;
+      if (vaultPath === null) return { kind: 'skip' };
 
       // Unconditional, and checked *before* the user's exclude list — which is a free-text field
       // they can empty. Without this a remote commit can drop `<configDir>/plugins/x/main.js`
@@ -460,9 +533,9 @@ export class SyncEngine {
       // gets code execution on this machine. It could also overwrite this plugin's own
       // `data.json`. The push path has had this backstop since day one; the pull path is the
       // more dangerous direction and had only the settings-dependent filter.
-      if (isForbiddenPath(vaultPath, this.deps.vault.configDir)) continue;
+      if (isForbiddenPath(vaultPath, this.deps.vault.configDir)) return { kind: 'skip' };
 
-      if (excluded(vaultPath)) continue;
+      if (excluded(vaultPath)) return { kind: 'skip' };
 
       const local = this.deps.vault.getFileByPath(vaultPath);
 
@@ -471,13 +544,10 @@ export class SyncEngine {
       // own output — destroying the note to apply a change derived from it. The desktop stays
       // the source of truth; if the remote really did move, the push planner sees it as
       // diverged and parks a sidecar, so nothing is lost silently.
-      const localPublished = local ? await this.publishedFor(local) : null;
-      if (localPublished && (localPublished.baked || localPublished.blocked)) {
-        skippedBaked += 1;
-        continue;
-      }
+      const described = local ? await this.describe(local) : null;
+      if (described && (described.baked || described.blocked)) return { kind: 'baked' };
 
-      const localSha = local ? await this.hash(local) : null;
+      const localSha = described?.sha ?? null;
       const baseSha = baseline.files[repoPath] ?? null;
 
       // The vault is what we are about to overwrite, so the vault is the side checked against
@@ -486,35 +556,67 @@ export class SyncEngine {
       switch (compare(localSha, remoteSha, baseSha)) {
         case 'mine':
           // Already applied — typically our own push coming back around.
-          if (remoteSha === null) delete nextFiles[repoPath];
-          else nextFiles[repoPath] = remoteSha;
-          break;
+          return { kind: 'mine', repoPath, remoteSha };
 
         case 'base':
-          if (remoteSha === null) {
-            // Trashed, never `delete`d: a remote deletion must stay recoverable locally.
-            // `trashFile` routes to wherever the user's own deletion preference says, which for
-            // an unattended sync matters more than for a delete they asked for.
-            if (local) await this.deps.fileManager.trashFile(local);
-            delete nextFiles[repoPath];
-            this.hashCache.delete(vaultPath);
-            deleted += 1;
-            paths.push({ op: 'delete', path: vaultPath });
-          } else {
-            await this.write(vaultPath, await readBlob(ctx, remoteSha));
-            nextFiles[repoPath] = remoteSha;
-            this.hashCache.delete(vaultPath);
-            written += 1;
-            paths.push({ op: 'write', path: vaultPath });
-          }
-          break;
+          return remoteSha === null
+            ? { kind: 'delete', repoPath, vaultPath, local }
+            : {
+                kind: 'write',
+                repoPath,
+                vaultPath,
+                remoteSha,
+                // Fetched here, in the concurrent half — this is the network cost a pull is made of.
+                base64: await readBlob(ctx, remoteSha),
+              };
 
         case 'diverged':
           // Write nothing, and deliberately do NOT advance the baseline entry: leaving it
           // stale is what keeps the path reading as diverged in the push plan, which is where
           // the sidecar gets parked and the conflict recorded. Doing it here as well would
           // park it twice, once per direction.
-          break;
+          return { kind: 'skip' };
+      }
+    };
+
+    // One window at a time: decide `CONCURRENCY` paths together, then apply them in order. Deciding
+    // the whole list up front would hold every incoming blob in memory at once.
+    for (const window of chunk(incoming, CONCURRENCY)) {
+      const decided = await mapLimit(window, CONCURRENCY, decide);
+
+      for (const outcome of decided) {
+        switch (outcome.kind) {
+          case 'skip':
+            break;
+
+          case 'baked':
+            skippedBaked += 1;
+            break;
+
+          case 'mine':
+            if (outcome.remoteSha === null) delete nextFiles[outcome.repoPath];
+            else nextFiles[outcome.repoPath] = outcome.remoteSha;
+            break;
+
+          case 'delete':
+            // Trashed, never `delete`d: a remote deletion must stay recoverable locally.
+            // `trashFile` routes to wherever the user's own deletion preference says, which for
+            // an unattended sync matters more than for a delete they asked for.
+            if (outcome.local) await this.deps.fileManager.trashFile(outcome.local);
+            delete nextFiles[outcome.repoPath];
+            this.hashCache.delete(outcome.vaultPath);
+            deleted += 1;
+            paths.push({ op: 'delete', path: outcome.vaultPath });
+            break;
+
+          case 'write':
+            await this.write(outcome.vaultPath, outcome.base64);
+            nextFiles[outcome.repoPath] = outcome.remoteSha;
+            this.hashCache.delete(outcome.vaultPath);
+            written += 1;
+            paths.push({ op: 'write', path: outcome.vaultPath });
+            break;
+        }
       }
     }
 
@@ -533,10 +635,7 @@ export class SyncEngine {
   private async write(vaultPath: string, base64: string): Promise<void> {
     const bytes = base64ToArrayBuffer(base64);
     const slash = vaultPath.lastIndexOf('/');
-    if (slash > 0) {
-      const folder = vaultPath.slice(0, slash);
-      if (!this.deps.vault.getFolderByPath(folder)) await this.deps.vault.createFolder(folder);
-    }
+    if (slash > 0) await this.ensureFolder(vaultPath.slice(0, slash));
 
     const existing = this.deps.vault.getFileByPath(vaultPath);
     if (isTextPath(vaultPath)) {
@@ -551,6 +650,33 @@ export class SyncEngine {
 
     if (existing) await this.deps.vault.modifyBinary(existing, bytes);
     else await this.deps.vault.createBinary(vaultPath, bytes);
+  }
+
+  /**
+   * Make a folder and every ancestor it needs.
+   *
+   * Ancestor by ancestor rather than one call for the whole path, because whether `createFolder`
+   * creates intermediate folders is not something this plugin should be betting a pull on — a
+   * remote commit that introduces `a/b/c/note.md` into a vault with no `a` is an ordinary event.
+   *
+   * The `catch` is not laziness: "does it exist?" and "create it" are two awaits with a gap, and
+   * a pull applies a window of files that frequently share a parent. Losing that race throws
+   * "Folder already exists" — which is the state we wanted. Re-checking and rethrowing anything
+   * else keeps a real failure (a permission error, a name collision with a *file*) loud.
+   */
+  private async ensureFolder(folder: string): Promise<void> {
+    const segments = folder.split('/').filter((segment) => segment.length > 0);
+    let path = '';
+
+    for (const segment of segments) {
+      path = path ? `${path}/${segment}` : segment;
+      if (this.deps.vault.getFolderByPath(path)) continue;
+      try {
+        await this.deps.vault.createFolder(path);
+      } catch (err) {
+        if (!this.deps.vault.getFolderByPath(path)) throw err;
+      }
+    }
   }
 
   // ---- push -----------------------------------------------------------------
@@ -582,13 +708,12 @@ export class SyncEngine {
       }
       if (!dryRun) await this.recordConflicts(ctx, plan);
 
-      for (const skipped of plan.skipped) {
-        new Notice(
-          skipped.reason === 'too-large'
-            ? `Basalt Causeway: skipped ${skipped.path} — ${(skipped.size / 1024 / 1024).toFixed(1)} MB exceeds the size limit.`
-            : `Basalt Causeway: held back ${skipped.path} — Dataview is not available, so its published form cannot be built.`,
-        );
-      }
+      // One Notice per reason, not per file. A vault with forty oversized attachments would
+      // otherwise stack forty toasts and bury everything else the sync had to say — the same
+      // failure `bakeWithDataview` already avoids by reporting its collected failures once.
+      // The full list is never lost: it is in the plan, the dry run, and the sync history.
+      noticeForSkipped(plan.skipped, 'too-large');
+      noticeForSkipped(plan.skipped, 'dataview-unavailable');
 
       if (dryRun) return { plan, commitSha: null };
 
@@ -676,6 +801,25 @@ export class SyncEngine {
 
     return entries;
   }
+}
+
+/**
+ * Say what was held back, once per reason.
+ *
+ * Names the first file and counts the rest, rather than listing them: a Notice is a glance, and
+ * a glance that needs scrolling has already failed. `describePlan` is where the full list lives.
+ */
+function noticeForSkipped(skipped: readonly SkippedFile[], reason: SkippedFile['reason']): void {
+  const files = skipped.filter((file) => file.reason === reason);
+  const first = files[0];
+  if (!first) return;
+
+  const more = files.length > 1 ? ` (and ${files.length - 1} more)` : '';
+  new Notice(
+    reason === 'too-large'
+      ? `Basalt Causeway: skipped ${first.path}${more} — over the ${(first.size / 1024 / 1024).toFixed(1)} MB size limit.`
+      : `Basalt Causeway: held back ${first.path}${more} — Dataview is not available, so the published form cannot be built.`,
+  );
 }
 
 async function readHeadTree(

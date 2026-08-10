@@ -872,3 +872,105 @@ describe('pendingCount', () => {
     expect(await h.engine.pendingCount()).toBe(0);
   });
 });
+
+describe('applying a pull', () => {
+  it('creates every missing ancestor folder for an incoming note', async () => {
+    const h = harness({ 'a.md': 'alpha' });
+    await h.engine.sync();
+
+    h.github.commit({ 'deep/nested/folder/note.md': 'from the phone' });
+    await h.engine.sync();
+
+    expect(h.vault.contentOf('deep/nested/folder/note.md')).toBe('from the phone');
+    expect(h.vault.folderPaths()).toEqual(['deep', 'deep/nested', 'deep/nested/folder']);
+  });
+
+  // Files applied together routinely share a parent, and "check, then create" has a gap between
+  // the two awaits. Losing that race must be survivable, not fatal to the sync.
+  it('survives several incoming files sharing one new folder', async () => {
+    const h = harness({ 'a.md': 'alpha' });
+    await h.engine.sync();
+
+    h.github.commit({
+      'shared/one.md': '1',
+      'shared/two.md': '2',
+      'shared/three.md': '3',
+      'shared/four.md': '4',
+    });
+    const report = await h.engine.sync();
+
+    expect(report.pulled.written).toBe(4);
+    expect(h.vault.contentOf('shared/four.md')).toBe('4');
+  });
+
+  it('reports pulled paths in a stable order', async () => {
+    const h = harness({ 'a.md': 'alpha' });
+    await h.engine.sync();
+
+    h.github.commit({ 'x/1.md': '1', 'x/2.md': '2', 'x/3.md': '3' });
+    const report = await h.engine.sync();
+
+    expect(report.pulled.paths.map((p) => p.path)).toEqual(['x/1.md', 'x/2.md', 'x/3.md']);
+  });
+});
+
+describe('reporting what was held back', () => {
+  const QUERY = '# Index\n\n```dataview\nTABLE file.name FROM #note\n```\n';
+
+  it('raises one notice for many oversized files, not one each', async () => {
+    const h = harness(
+      {
+        'a.md': 'alpha',
+        'big1.bin': 'x'.repeat(2000),
+        'big2.bin': 'x'.repeat(2000),
+        'big3.bin': 'x'.repeat(2000),
+      },
+      {},
+      { maxFileBytes: 1000 },
+    );
+
+    const report = await h.engine.sync();
+
+    expect(report.plan.skipped).toHaveLength(3);
+    const skippedNotices = notices.filter((n) => n.includes('size limit'));
+    expect(skippedNotices).toHaveLength(1);
+    expect(skippedNotices[0]).toContain('and 2 more');
+  });
+
+  it('names the file plainly when only one was skipped', async () => {
+    const h = harness({ 'a.md': 'alpha', 'big.bin': 'x'.repeat(2000) }, {}, { maxFileBytes: 1000 });
+
+    await h.engine.sync();
+
+    const skipped = notices.find((n) => n.includes('size limit'));
+    expect(skipped).toContain('big.bin');
+    expect(skipped).not.toContain('more');
+  });
+
+  // Two reasons are two separate facts about the sync, and collapsing them would hide one.
+  it('reports oversized and held-back files separately', async () => {
+    const h = harness({ 'Index.md': QUERY, 'big.bin': 'x'.repeat(2000) }, {}, { maxFileBytes: 1000 });
+    h.setDataviewAvailable(false);
+
+    await h.engine.sync();
+
+    expect(notices.filter((n) => n.includes('size limit'))).toHaveLength(1);
+    expect(notices.filter((n) => n.includes('Dataview is not available'))).toHaveLength(1);
+  });
+});
+
+describe('the published form', () => {
+  const QUERY = '# Index\n\n```dataview\nTABLE file.name FROM #note\n```\n';
+
+  // Enumeration used to ask for the published form and then ask for the sha, which asked again —
+  // every query note rendered twice, on every settle tick, since `pendingCount` enumerates too.
+  it('renders each query note once per enumeration', async () => {
+    const h = harness({ 'Index.md': QUERY });
+    await h.engine.sync();
+
+    const before = h.bakeCount;
+    await h.engine.pendingCount();
+
+    expect(h.bakeCount - before).toBe(1);
+  });
+});
