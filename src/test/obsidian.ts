@@ -34,3 +34,54 @@ export class Notice {
 export function clearNotices(): void {
   notices.length = 0;
 }
+
+/**
+ * Stand-in for Obsidian's HTTP, so `transport.ts` is reachable from a test at all.
+ *
+ * Queued responses rather than a fixed one: the thing worth asserting about the transport is that
+ * it passes `throw: false` and hands 4xx back as a value — the behaviour the whole error taxonomy
+ * depends on — and that needs a failing status to be observable.
+ */
+export type RequestUrlCall = {
+  url: string;
+  method?: string;
+  headers?: Record<string, string>;
+  body?: string;
+  throw?: boolean;
+};
+
+export const requestUrlCalls: RequestUrlCall[] = [];
+let queued: { status: number; headers: Record<string, string>; text: string }[] = [];
+let failNext: Error | null = null;
+
+export function queueResponse(res: {
+  status: number;
+  headers?: Record<string, string>;
+  text?: string;
+}): void {
+  queued.push({ status: res.status, headers: res.headers ?? {}, text: res.text ?? '' });
+}
+
+export function failRequest(err: Error): void {
+  failNext = err;
+}
+
+export function clearRequests(): void {
+  requestUrlCalls.length = 0;
+  queued = [];
+  failNext = null;
+}
+
+export async function requestUrl(req: RequestUrlCall): Promise<{
+  status: number;
+  headers: Record<string, string>;
+  text: string;
+}> {
+  requestUrlCalls.push(req);
+  if (failNext) {
+    const err = failNext;
+    failNext = null;
+    throw err;
+  }
+  return queued.shift() ?? { status: 200, headers: {}, text: '{}' };
+}
