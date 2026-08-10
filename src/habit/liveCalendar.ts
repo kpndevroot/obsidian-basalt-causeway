@@ -14,14 +14,21 @@
  *   3. The write is a transaction, never a file write — see `toggle` at the bottom.
  */
 
-import { StateField, type EditorState, type Extension, type Range } from '@codemirror/state';
+import {
+  StateField,
+  type EditorState,
+  type Extension,
+  type Range,
+  type Text,
+  type Transaction,
+} from '@codemirror/state';
 import { Decoration, EditorView, WidgetType, type DecorationSet } from '@codemirror/view';
 import { Notice, editorLivePreviewField } from 'obsidian';
 
 import { findHabitBlocks } from './blocks';
 import { buildGrid } from './grid';
 import { isoOf, type CalendarDay, type HabitMonth } from './month';
-import { taskMarkerOffset } from './tasks';
+import { isListItemLine, taskMarkerOffset } from './tasks';
 
 export function habitCalendarExtension(enabled: () => boolean): Extension {
   return StateField.define<DecorationSet>({
@@ -35,11 +42,51 @@ export function habitCalendarExtension(enabled: () => boolean): Extension {
         tr.state.field(editorLivePreviewField, false) !==
         tr.startState.field(editorLivePreviewField, false);
       if (!tr.docChanged && !tr.selection && !modeChanged) return value.map(tr.changes);
+
+      // A document change that cannot affect any tracker does not justify re-reading the document.
+      // Rebuilding means stringifying the whole note and regexing every line of it, on a keystroke
+      // — fine for a tracker, wasteful in a long note where the edit is nowhere near a list.
+      if (tr.docChanged && !tr.selection && !modeChanged && !touchesAnyList(tr)) {
+        return value.map(tr.changes);
+      }
+
       return build(tr.state, enabled);
     },
 
     provide: (field) => EditorView.decorations.from(field),
   });
+}
+
+/**
+ * Whether this edit could have changed which lines are list items.
+ *
+ * Only the lines the change actually touched are read — before *and* after, because deleting the
+ * bullet off a day stops it being an item and the new text alone would not say so. Everything else
+ * in the document is left unread, which is the whole point: typing a paragraph three hundred lines
+ * below a tracker should cost nothing.
+ *
+ * Errs towards rebuilding. A false positive is one wasted scan; a false negative is a grid that
+ * silently stops matching its own note.
+ */
+function touchesAnyList(tr: Transaction): boolean {
+  let touched = false;
+
+  tr.changes.iterChangedRanges((fromA, toA, fromB, toB) => {
+    if (touched) return;
+    touched =
+      hasListLineBetween(tr.startState.doc, fromA, toA) || hasListLineBetween(tr.state.doc, fromB, toB);
+  });
+
+  return touched;
+}
+
+function hasListLineBetween(doc: Text, from: number, to: number): boolean {
+  const first = doc.lineAt(from).number;
+  const last = doc.lineAt(to).number;
+  for (let line = first; line <= last; line += 1) {
+    if (isListItemLine(doc.line(line).text)) return true;
+  }
+  return false;
 }
 
 function build(state: EditorState, enabled: () => boolean): DecorationSet {
